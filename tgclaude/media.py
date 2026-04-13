@@ -7,6 +7,7 @@ as a text notice with the path.
 
 from __future__ import annotations
 
+import html
 import logging
 from pathlib import Path
 
@@ -95,7 +96,7 @@ async def _send_path_notice(path: Path, bot: Bot, chat_id: int) -> None:
     """Tell the user where the file lives on the VPS."""
     await bot.send_message(
         chat_id=chat_id,
-        text=f"📄 File written: <code>{path}</code>",
+        text=f"📄 File written: <code>{html.escape(str(path))}</code>",
         parse_mode="HTML",
     )
 
@@ -107,7 +108,7 @@ async def _send_oversize_notice(
     await bot.send_message(
         chat_id=chat_id,
         text=(
-            f"📄 File written: <code>{path}</code>\n"
+            f"📄 File written: <code>{html.escape(str(path))}</code>\n"
             f"<i>({kind} exceeds {limit_mb} MB — retrieve it over SSH)</i>"
         ),
         parse_mode="HTML",

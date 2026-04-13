@@ -221,7 +221,7 @@ def _split_content(text: str, limit: int) -> tuple[str, str]:
     """Split *text* at a safe boundary within *limit* chars.
 
     Returns (chunk, remainder).  Never splits inside a tag.
-    Priority: \\n\\n > \\n > tag boundary.
+    Priority: \\n\\n > \\n > space > tag boundary.
     """
     if len(text) <= limit:
         return text, ""
@@ -246,5 +246,10 @@ def _split_content(text: str, limit: int) -> tuple[str, str]:
     if pos > 0:
         return text[:pos + 1], text[pos + 1:]
 
-    # Strategy 3: hard split at tag boundary
+    # Strategy 3: last space (avoid splitting mid-word)
+    pos = candidate.rfind(" ")
+    if pos > 0:
+        return text[:pos + 1], text[pos + 1:]
+
+    # Strategy 4: hard split at tag boundary
     return text[:safe_limit], text[safe_limit:]

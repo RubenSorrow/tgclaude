@@ -51,8 +51,8 @@ def _collect_inline_tokens(tokens: list[Token]) -> str:
             case "link_close":
                 parts.append("</a>")
             case "html_inline":
-                # Pass through raw HTML as-is (rare but possible)
-                parts.append(tok.content)
+                # Escape as literal text; Telegram rejects unsupported tags.
+                parts.append(html.escape(tok.content))
             case _:
                 # image, etc. — render children if any
                 if tok.children:

@@ -511,7 +511,7 @@ class ClaudeBridge:
                 "message": "permission prompt timed out \u2014 no response from Telegram.",
             }
             if not future.done():
-                future.cancel()
+                future.set_result({"allow": False, "message": "Timed out waiting for permission."})
             # Clean up waiting_for_reason if user was in that state
             waiting_for_reason.pop(user_id, None)
             await _edit_permission_message(prompt_msg, text_html, "\u23f1 Timed out")
