@@ -184,14 +184,6 @@ class Database:
         )
         await self._conn.commit()
 
-    async def clear_alert_state_for_threshold(self, bucket: str, threshold: int) -> None:
-        """Remove the fired record for a single (bucket, threshold) pair."""
-        async with self._conn.execute(
-            "DELETE FROM alert_state WHERE bucket = ? AND threshold = ?",
-            (bucket, threshold),
-        ):
-            await self._conn.commit()
-
     # ------------------------------------------------------------------
     # settings
     # ------------------------------------------------------------------

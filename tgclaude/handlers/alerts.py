@@ -186,12 +186,12 @@ async def alerts_poller(context: ContextTypes.DEFAULT_TYPE) -> None:
             else:
                 # Utilization dropped below threshold — if resets_at changed, clear state
                 if state is not None and state != current_resets_at:
-                    await db.clear_alert_state_for_threshold(bucket_key, threshold)
+                    await db.clear_alert_state_for_bucket(bucket_key)
                     log.debug(
-                        "alerts_poller: cleared alert state for bucket=%s threshold=%d (resets_at changed)",
+                        "alerts_poller: cleared alert state for bucket=%s (resets_at changed)",
                         bucket_key,
-                        threshold,
                     )
+                    break
 
     if not messages_to_send:
         return

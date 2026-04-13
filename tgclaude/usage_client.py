@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -9,7 +10,6 @@ from typing import Any
 
 import httpx
 
-from tgclaude import __version__
 from tgclaude.auth import read_access_token
 
 log = logging.getLogger(__name__)
@@ -31,6 +31,29 @@ _BUCKET_LABELS: dict[str, str] = {
     "seven_day": "Current week (all)",
     "seven_day_sonnet": "Current week (Sonnet)",
 }
+
+_cached_cli_version: str | None = None
+
+
+def _get_claude_cli_version() -> str:
+    """Detect the installed Claude CLI version, cached after first call."""
+    global _cached_cli_version
+    if _cached_cli_version is not None:
+        return _cached_cli_version
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        # Output is typically like "claude 1.0.16" or "Claude Code 1.0.16"
+        # Extract the version number (last whitespace-delimited token that looks like X.Y.Z)
+        version = result.stdout.strip().split()[-1] if result.stdout.strip() else "unknown"
+        _cached_cli_version = version
+    except (FileNotFoundError, subprocess.TimeoutExpired, IndexError, Exception):
+        _cached_cli_version = "unknown"
+    return _cached_cli_version
 
 
 class UsageAuthError(Exception):
@@ -84,7 +107,7 @@ class UsageClient:
         return {
             "Authorization": f"Bearer {token}",
             "anthropic-beta": BETA_HEADER,
-            "User-Agent": f"claude-cli/{__version__}",
+            "User-Agent": f"claude-cli/{_get_claude_cli_version()}",
         }
 
     @staticmethod

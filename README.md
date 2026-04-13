@@ -12,8 +12,9 @@ stores only a tiny SQLite database of your own.
 
 ## Screenshots
 
-![tgclaude bot in action](docs/screenshot.png)
-<!-- Replace with a real screenshot once the bot is deployed -->
+> _Add a screenshot of the bot in action: save it as `docs/screenshot.png` and uncomment the line below._
+
+<!-- ![tgclaude bot in action](docs/screenshot.png) -->
 
 ---
 

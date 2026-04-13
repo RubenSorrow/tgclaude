@@ -29,9 +29,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 
-# Allow writes to the database directory and the Claude home (for reading
-# credentials.json and session JSONL files, which may be updated at runtime).
-ReadWritePaths=%h/.local/state/tgclaude %h/.claude
+# Allow writes to the database directory, the Claude home (for reading
+# credentials.json and session JSONL files, which may be updated at runtime),
+# and the user home directory so Claude tool operations (Write, Edit, Bash)
+# can write to $CLAUDE_PROJECT_CWD which defaults to %h.
+ReadWritePaths=%h/.local/state/tgclaude %h/.claude %h
 
 [Install]
 WantedBy=multi-user.target
