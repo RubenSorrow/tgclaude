@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS alert_state (
 );
 
 CREATE TABLE IF NOT EXISTS settings (
+  -- Known key patterns:
+  --   alerts_enabled      — boolean flag for background usage alerts
+  --   alert_thresholds    — JSON list of usage percentage thresholds
+  --   welcomed_{user_id}  — per-user first-run flag set by start_command
   key    TEXT PRIMARY KEY,
   value  TEXT NOT NULL
 );

@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import aiosqlite
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -41,6 +43,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     db = context.bot_data["db"]
+    # welcomed_{user_id}: per-user first-run flag (intentional extension to the settings table)
     welcomed_key = f"welcomed_{user_id}"
     already_welcomed = await db.get_setting(welcomed_key)
 
@@ -240,7 +243,18 @@ async def picker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 text="That session is currently attached to another user. Choose a different one.",
             )
             return
-        await db.set_active_session(user_id, new_uuid)
+        # Guard against the check-then-act race: two concurrent users could
+        # both pass the get_user_for_session check above and then race here.
+        # The UNIQUE constraint on session_uuid will reject the second write.
+        try:
+            await db.set_active_session(user_id, new_uuid)
+        except aiosqlite.IntegrityError:
+            await query.answer("This session is already in use by another user.")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="That session was just attached by another user. Choose a different one.",
+            )
+            return
         if turn_in_flight:
             reattach_after_turn[user_id] = new_uuid
             detach_after_turn.pop(user_id, None)
@@ -385,12 +399,12 @@ async def _build_picker(
 
 def _relative_time(mtime: datetime, now: datetime) -> str:
     """Format mtime relative to now as 'Xm ago', 'Xh ago', 'yesterday', or 'Xd ago'."""
-    # Make mtime timezone-aware (it may be naive local time from os.stat)
+    # Make mtime timezone-aware (it may be naive local time from os.stat).
+    # datetime.fromtimestamp(st_mtime) returns naive local time; .timestamp()
+    # converts it back to a Unix epoch treating it as local, then
+    # fromtimestamp(..., tz=utc) gives the correct UTC-aware datetime.
     if mtime.tzinfo is None:
-        import time as _time
-        offset = _time.timezone
-        from datetime import timedelta
-        mtime = mtime.replace(tzinfo=timezone.utc) + timedelta(seconds=offset)
+        mtime = datetime.fromtimestamp(mtime.timestamp(), tz=timezone.utc)
 
     delta_s = (now - mtime).total_seconds()
     if delta_s < 0:

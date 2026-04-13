@@ -11,6 +11,15 @@ from .ascii_detect import is_ascii_art
 # Horizontal rule replacement (12 heavy box-drawing dashes)
 HR_REPLACEMENT = "━━━━━━━━━━━━\n"
 
+# Maps diagram language tags to their canonical render URL hint.
+# Stable policy: adding a new diagram tool = adding one entry here (OCP).
+_DIAGRAM_RENDER_HINTS: dict[str, str] = {
+    "mermaid": "mermaid.live",
+    "graphviz": "dreampuf.github.io/GraphvizOnline",
+    "dot": "dreampuf.github.io/GraphvizOnline",
+    "plantuml": "www.plantuml.com/plantuml",
+}
+
 
 def _collect_inline_tokens(tokens: list[Token]) -> str:
     """Walk a flat list of inline tokens and emit Telegram HTML."""
@@ -105,6 +114,15 @@ def _render_tokens(tokens: list[Token]) -> str:  # noqa: C901  (complex by neces
         if tok.type == "fence":
             lang = (tok.info or "").strip()
             escaped_code = html.escape(tok.content)
+            lang_lower = lang.lower()
+            render_hint = _DIAGRAM_RENDER_HINTS.get(lang_lower)
+            if render_hint:
+                output.append(
+                    f'<pre><code class="language-{html.escape(lang)}">{escaped_code}</code></pre>'
+                    f'\n<i>↑ render at {html.escape(render_hint)}</i>\n\n'
+                )
+                i += 1
+                continue
             if lang:
                 safe_lang = html.escape(lang)
                 output.append(

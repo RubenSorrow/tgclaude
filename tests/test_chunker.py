@@ -31,24 +31,26 @@ def test_all_chunks_within_limit() -> None:
         assert len(chunk) <= TARGET_LENGTH, f"Chunk too long: {len(chunk)}"
 
 
-# ── Multi-chunk suffix ────────────────────────────────────────────────────────
+# ── Multi-chunk behaviour ─────────────────────────────────────────────────────
 
-def test_multi_chunk_gets_suffix() -> None:
+def test_multi_chunk_splits_long_input() -> None:
+    """A message longer than TARGET_LENGTH must produce more than one chunk."""
     long_msg = "A" * (TARGET_LENGTH + 100)
     chunks = chunk_message(long_msg)
     assert len(chunks) > 1
-    total = len(chunks)
-    for i, chunk in enumerate(chunks, start=1):
-        assert chunk.endswith(f" ({i}/{total})"), f"Chunk {i} missing suffix: {chunk[-20:]!r}"
 
 
-def test_suffix_format_is_correct() -> None:
-    # Create a message that produces exactly 2 chunks.
-    # Each chunk targets 4000 chars; we need > 4000 total.
+def test_chunks_have_no_suffix() -> None:
+    """chunk_message() returns raw chunks — no trailing \" (N/M)\" suffix on any chunk."""
+    import re as _re
+    suffix_pattern = _re.compile(r" \(\d+/\d+\)$")
     msg = "\n\n".join(["x" * 3990, "y" * 100])
     chunks = chunk_message(msg)
     assert len(chunks) >= 2
-    assert chunks[0].endswith("(1/2)") or "(1/" in chunks[0]
+    for chunk in chunks:
+        assert not suffix_pattern.search(chunk), (
+            f"Unexpected suffix on chunk: {chunk[-30:]!r}"
+        )
 
 
 # ── Paragraph-boundary preference ────────────────────────────────────────────
@@ -60,10 +62,8 @@ def test_split_prefers_paragraph_boundary() -> None:
     part_b = "b" * 200
     msg = part_a + part_b
     chunks = chunk_message(msg)
-    # The first chunk should end at the \\n\\n boundary (after stripping suffix).
-    # We strip the suffix "(1/N)" for comparison.
-    first_chunk_content = chunks[0].rsplit(" (", 1)[0]
-    assert first_chunk_content.endswith("\n\n") or first_chunk_content.strip().endswith("a" * 10)
+    # The first chunk should end at the \\n\\n boundary.
+    assert chunks[0].endswith("\n\n") or chunks[0].strip().endswith("a" * 10)
 
 
 # ── Tag balancing ─────────────────────────────────────────────────────────────
@@ -82,9 +82,7 @@ def test_open_b_tag_reopened_at_next_chunk() -> None:
     inner = "<b>" + "x" * 3990 + "more bold text" + "</b>"
     chunks = chunk_message(inner)
     if len(chunks) > 1:
-        # The second chunk (before suffix) should start with <b>
-        second_content = chunks[1].rsplit(" (", 1)[0]
-        assert second_content.startswith("<b>")
+        assert chunks[1].startswith("<b>")
 
 
 def test_nested_tags_balanced() -> None:
@@ -92,12 +90,10 @@ def test_nested_tags_balanced() -> None:
     inner = "<b><i>" + "x" * 3990 + "end</i></b>"
     chunks = chunk_message(inner)
     if len(chunks) > 1:
-        first = chunks[0]
-        second = chunks[1].rsplit(" (", 1)[0]
         # First chunk must close both i and b
-        assert "</i>" in first or "</b>" in first
+        assert "</i>" in chunks[0] or "</b>" in chunks[0]
         # Second chunk must re-open the tags it closed
-        assert "<b>" in second or "<i>" in second
+        assert "<b>" in chunks[1] or "<i>" in chunks[1]
 
 
 # ── <pre> blocks never split ──────────────────────────────────────────────────
@@ -134,10 +130,9 @@ def test_balanced_tags_not_double_closed() -> None:
     chunks = chunk_message(msg)
     # The first chunk should not have an extra </b> if <b> was already closed.
     if len(chunks) > 1:
-        first = chunks[0].rsplit(" (", 1)[0]
         # Count tags: open and close should match within the chunk.
-        b_opens = first.count("<b>")
-        b_closes = first.count("</b>")
+        b_opens = chunks[0].count("<b>")
+        b_closes = chunks[0].count("</b>")
         assert b_opens == b_closes
 
 
@@ -147,5 +142,4 @@ def test_link_tag_reopened_with_href() -> None:
     inner = f'<a href="{href}">' + "link text " * 800 + "</a>"
     chunks = chunk_message(inner)
     if len(chunks) > 1:
-        second = chunks[1].rsplit(" (", 1)[0]
-        assert f'href="{href}"' in second or 'href=' in second
+        assert f'href="{href}"' in chunks[1] or 'href=' in chunks[1]
