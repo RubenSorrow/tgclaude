@@ -106,7 +106,11 @@ def build_redaction_filter(secrets: list[str]) -> logging.Filter:
     """Return a Filter that replaces known secret literals with <REDACTED>.
     Also applies a regex fallback for token-shaped strings.
     """
-    _TOKEN_RE = re.compile(r"[A-Za-z0-9_.+/=-]{20,200}")
+    _TOKEN_RE = re.compile(
+        r"sk-ant-[A-Za-z0-9_-]+"                                               # Anthropic API keys
+        r"|eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+(?:\.[A-Za-z0-9_=-]+)?"        # JWTs
+        r"|[A-Za-z0-9+/]{60,}={0,2}"                                           # Long base64 OAuth tokens (60+ chars avoids UUIDs)
+    )
     _mutable_secrets = list(secrets)  # mutable so new tokens can be added
 
     class _RedactionFilter(logging.Filter):
@@ -122,10 +126,7 @@ def build_redaction_filter(secrets: list[str]) -> logging.Filter:
                 if secret and secret in msg:
                     msg = msg.replace(secret, "<REDACTED>")
             # Pass 2: regex fallback for token-shaped strings not already redacted
-            msg = _TOKEN_RE.sub(
-                lambda m: "<REDACTED>" if len(m.group()) >= 20 else m.group(),
-                msg,
-            )
+            msg = _TOKEN_RE.sub("<REDACTED>", msg)
             record.msg = msg
             record.args = ()
             return True

@@ -46,6 +46,9 @@ pending_permissions: dict[tuple[int, str], asyncio.Future] = {}
 # user_id → tool_use_id they're composing a denial reason for
 waiting_for_reason: dict[int, str] = {}
 
+# session_uuid → user_id of the user currently running a turn against that session
+_active_sessions: dict[str, int] = {}
+
 # ---------------------------------------------------------------------------
 # Truncation constants (§5 ToolUseBlock display)
 # ---------------------------------------------------------------------------
@@ -167,6 +170,22 @@ class ClaudeBridge:
 
         session_uuid = await self._db.get_active_session(user_id)
 
+        # Collision guard: reject if another user is already running a turn on this session.
+        if session_uuid and session_uuid in _active_sessions and _active_sessions[session_uuid] != user_id:
+            logger.warning(
+                "Session %s already active for user %d; rejecting turn for user %d",
+                session_uuid, _active_sessions[session_uuid], user_id,
+            )
+            await bot.send_message(
+                chat_id=chat_id,
+                text="This session is currently in use. Please wait a moment and retry.",
+            )
+            return
+
+        # Register this session as in-use for the duration of this turn.
+        if session_uuid:
+            _active_sessions[session_uuid] = user_id
+
         options = self._build_options(user_id, session_uuid, bot, chat_id)
 
         await bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -206,10 +225,18 @@ class ClaudeBridge:
                     text="An unexpected error occurred. Please try again.",
                 )
         finally:
-            # Always clear deferred flags; only persist UUID on success (§4)
-            await self._persist_session(
-                user_id, new_session_uuid if sdk_succeeded else None
-            )
+            # Release the session slot first so the next turn can start immediately.
+            if session_uuid:
+                _active_sessions.pop(session_uuid, None)
+
+            if sdk_succeeded:
+                await self._persist_session(user_id, new_session_uuid)
+            else:
+                # SDK failed: discard deferred flags without acting on them.
+                # Command handlers (/new, picker) already wrote correct DB state.
+                from tgclaude.handlers.messages import detach_after_turn, reattach_after_turn
+                detach_after_turn.pop(user_id, None)
+                reattach_after_turn.pop(user_id, None)
 
     # ------------------------------------------------------------------
     # SDK options builder

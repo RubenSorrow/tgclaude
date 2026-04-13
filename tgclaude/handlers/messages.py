@@ -98,7 +98,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if queue.full():
             # Determine correct rejection message
             has_pending_perm = any(uid == user_id for (uid, _) in pending_permissions)
-            if user_id in waiting_for_reason or has_pending_perm:
+            if user_id in waiting_for_reason:
+                reply = "Waiting for your denial reason — type it now."
+            elif has_pending_perm:
                 reply = "Still waiting for your permission tap above."
             else:
                 reply = "Claude is still working on your previous message."
@@ -138,24 +140,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def unsupported_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reject non-text, non-command messages with an explanatory reply.
-
-    When the user is in WAITING_FOR_REASON, the rejection message acknowledges
-    that state so the user knows to send text instead.
-    """
+    """Reject non-text, non-command messages with a uniform one-liner."""
     if update.effective_user is None or update.message is None:
         return
     user_id = update.effective_user.id
     config = context.bot_data["config"]
     if user_id not in config.allowed_user_ids:
         return  # silent drop per §10
-    from tgclaude.claude_bridge import waiting_for_reason
-    if user_id in waiting_for_reason:
-        await update.message.reply_text(
-            "Please send a text message explaining why Claude should not use this tool."
-        )
-    else:
-        await update.message.reply_text("I only understand text messages.")
+    await update.message.reply_text("I only understand text messages.")
 
 
 # ---------------------------------------------------------------------------
