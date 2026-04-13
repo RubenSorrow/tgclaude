@@ -1,18 +1,23 @@
 """Session discovery.
 
-Reads Claude's JSONL session files from disk and returns a sorted list of
-session metadata.  All I/O is synchronous file reads (the files are local
-and small); the function is declared async only to fit the async calling
-convention of the rest of the codebase.
+Uses the SDK's ``list_sessions`` to enumerate Claude sessions for a project
+directory and returns sorted ``SessionInfo`` objects for the Telegram picker.
+Falls back gracefully to an empty list if the SDK function is unavailable.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from claude_agent_sdk import list_sessions as _sdk_list_sessions
+    _SDK_AVAILABLE = True
+except ImportError:
+    _sdk_list_sessions = None  # type: ignore[assignment]
+    _SDK_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +29,9 @@ _UUID_FALLBACK_CHARS = 8
 class SessionInfo:
     """Metadata about a single Claude session."""
 
-    session_uuid: str    # filename without the .jsonl extension
-    title: str           # first user message, truncated to 50 chars, single line
-    mtime: datetime      # file modification time (used for sort order)
+    session_uuid: str    # session UUID
+    title: str           # display title, truncated to 50 chars, single line
+    mtime: datetime      # last-modified time (used for sort order)
 
 
 def encoded_project_dir(cwd: Path) -> str:
@@ -52,28 +57,33 @@ def encoded_project_dir(cwd: Path) -> str:
 async def list_sessions(claude_home: Path, project_cwd: Path) -> list[SessionInfo]:
     """Return all sessions for project_cwd, sorted newest-first by mtime.
 
-    Scans ``$CLAUDE_HOME/projects/<encoded_project_dir(project_cwd)>/*.jsonl``.
+    Delegates to the SDK's ``list_sessions`` function, passing the raw
+    project CWD so the SDK can apply its own path encoding.
 
     Args:
-        claude_home: Path to the Claude home directory (typically ``~/.claude``).
+        claude_home: Unused; kept for API compatibility with callers.
         project_cwd: The working directory whose sessions should be listed.
 
     Returns:
-        Sessions sorted newest-first by file modification time.  Returns an
-        empty list (not an error) if the project directory does not exist yet.
-        Corrupt or unreadable JSONL files are silently skipped.
+        Sessions sorted newest-first by last-modified time.  Returns an
+        empty list if the SDK is unavailable or no sessions exist.
     """
-    project_dir = claude_home / "projects" / encoded_project_dir(project_cwd)
+    if not _SDK_AVAILABLE:
+        logger.warning("claude_agent_sdk not installed; session listing unavailable")
+        return []
 
-    if not project_dir.exists():
-        logger.debug("Project directory %s does not exist yet; returning empty list", project_dir)
+    try:
+        sdk_sessions = _sdk_list_sessions(directory=str(project_cwd))
+    except Exception as exc:
+        logger.debug("SDK list_sessions failed: %s", exc)
         return []
 
     sessions: list[SessionInfo] = []
-    for jsonl_path in project_dir.glob("*.jsonl"):
-        info = _load_session_info(jsonl_path)
-        if info is not None:
-            sessions.append(info)
+    for s in sdk_sessions:
+        # last_modified is milliseconds since epoch (int)
+        mtime = datetime.fromtimestamp(s.last_modified / 1000, tz=timezone.utc)
+        title = _normalise_title(s.summary if s.summary else s.session_id[:_UUID_FALLBACK_CHARS])
+        sessions.append(SessionInfo(session_uuid=s.session_id, title=title, mtime=mtime))
 
     sessions.sort(key=lambda s: s.mtime, reverse=True)
     return sessions
@@ -82,90 +92,6 @@ async def list_sessions(claude_home: Path, project_cwd: Path) -> list[SessionInf
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-
-def _load_session_info(path: Path) -> SessionInfo | None:
-    """Parse a single JSONL file into SessionInfo, or return None on failure."""
-    session_uuid = path.stem
-
-    try:
-        mtime = datetime.fromtimestamp(path.stat().st_mtime)
-    except OSError as exc:
-        logger.debug("Cannot stat %s: %s — skipping", path, exc)
-        return None
-
-    title = _extract_title(path, session_uuid)
-    return SessionInfo(session_uuid=session_uuid, title=title, mtime=mtime)
-
-
-def _extract_title(path: Path, session_uuid: str) -> str:
-    """Read the first user message from the JSONL as the session title.
-
-    Falls back to the first 8 characters of the UUID if no user message is
-    found or if the file cannot be read.
-    """
-    fallback = session_uuid[:_UUID_FALLBACK_CHARS]
-
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        logger.debug("Cannot read %s: %s — using fallback title", path, exc)
-        return fallback
-
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        content = _parse_user_content(line)
-        if content is not None:
-            return _normalise_title(content)
-
-    return fallback
-
-
-def _parse_user_content(line: str) -> str | None:
-    """Extract the text content of the first user message in a JSONL line.
-
-    Tries two known schema shapes Claude Code has used:
-      1. ``{"message": {"role": "user", "content": ...}}``
-      2. ``{"role": "user", "content": ...}``
-
-    Returns the extracted text, or None if this line is not a user message.
-    """
-    try:
-        entry = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(entry, dict):
-        return None
-
-    # Shape 1: nested under 'message'
-    message = entry.get("message")
-    if isinstance(message, dict) and message.get("role") == "user":
-        return _extract_content_text(message.get("content"))
-
-    # Shape 2: flat entry
-    if entry.get("role") == "user":
-        return _extract_content_text(entry.get("content"))
-
-    return None
-
-
-def _extract_content_text(content: object) -> str | None:
-    """Extract a plain string from a content field that may be str or list."""
-    if isinstance(content, str):
-        return content or None
-
-    if isinstance(content, list):
-        # Content may be a list of blocks: [{"type": "text", "text": "..."}]
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                if isinstance(text, str) and text:
-                    return text
-
-    return None
 
 
 def _normalise_title(text: str) -> str:

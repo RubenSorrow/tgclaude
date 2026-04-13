@@ -13,7 +13,6 @@ import asyncio
 import html
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,9 @@ from claude_agent_sdk.types import (
     ResultMessage,
     AssistantMessage,
     UserMessage,
+    ToolPermissionContext,
+    PermissionResultAllow,
+    PermissionResultDeny,
 )
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -206,7 +208,6 @@ class ClaudeBridge:
 
         new_session_uuid: str | None = session_uuid
         sdk_succeeded = False
-        turn_started_at = time.time()
         try:
             async for block in query(
                 prompt=text,
@@ -220,7 +221,6 @@ class ClaudeBridge:
                     bot=bot,
                     chat_id=chat_id,
                     current_new_uuid=new_session_uuid,
-                    turn_started_at=turn_started_at,
                 )
             sdk_succeeded = True
         except Exception as exc:
@@ -279,8 +279,9 @@ class ClaudeBridge:
             async def can_use_tool(
                 tool_name: str,
                 tool_input: Any,
-                tool_use_id: str,
+                context: ToolPermissionContext,
             ):
+                tool_use_id = getattr(context, "tool_use_id", None) or getattr(context, "id", "") or ""
                 return await self._can_use_tool(
                     tool_name=tool_name,
                     tool_input=tool_input,
@@ -306,7 +307,6 @@ class ClaudeBridge:
         bot: Bot,
         chat_id: int,
         current_new_uuid: str | None,
-        turn_started_at: float = 0.0,
     ) -> str | None:
         """Route a single SDK content block to the correct handler.
 
@@ -323,13 +323,9 @@ class ClaudeBridge:
                 if isinstance(content, ToolResultBlock):
                     await self._send_tool_result(content, user_id, bot, chat_id)
         elif isinstance(block, ResultMessage):
-            # Extract new session UUID if the SDK emits one
-            extracted = _extract_session_uuid(
-                block,
-                claude_home=self._config.claude_home,
-                claude_project_cwd=self._config.claude_project_cwd,
-                turn_started_at=turn_started_at,
-            )
+            if getattr(block, "is_error", False):
+                logger.warning("SDK reported error in ResultMessage for turn")
+            extracted = _extract_session_uuid(block)
             if extracted:
                 return extracted
         return current_new_uuid
@@ -416,10 +412,10 @@ class ClaudeBridge:
             await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
         # Dispatch any file written by a preceding Write tool now that it exists.
-        tool_use_id = getattr(block, "tool_use_id", None)
+        tool_use_id = block.tool_use_id
         if tool_use_id:
             # Skip dispatch if the tool reported an error.
-            tool_errored = getattr(block, "is_error", False)
+            tool_errored = block.is_error is True
             user_writes = self._pending_writes.get(user_id, {})
             file_path_str = user_writes.pop(tool_use_id, None)
             if file_path_str and not tool_errored:
@@ -442,13 +438,13 @@ class ClaudeBridge:
         session_uuid: str | None,
         bot: Bot,
         chat_id: int,
-    ) -> dict[str, Any]:
+    ) -> PermissionResultAllow | PermissionResultDeny:
         """The can_use_tool callback passed to the SDK.
 
         Responsible for announcing the tool use in interactive/readonly modes
         (bypass mode announces in _send_tool_use_block instead).
 
-        Returns {"allow": bool} or {"allow": False, "message": str}.
+        Internally uses dict protocol for futures; converts to SDK types before returning.
         """
         mode = self._config.permission_mode
         text_html, _ = _build_tool_announcement(tool_name, tool_input)
@@ -458,12 +454,12 @@ class ClaudeBridge:
             await bot.send_message(chat_id=chat_id, text=text_html, parse_mode="HTML")
             if tool_name in READONLY_TOOLS:
                 logger.debug("readonly mode: auto-allowing %s", tool_name)
-                return {"allow": True}
+                return PermissionResultAllow(behavior="allow")
             logger.info("readonly mode: denying %s for user %d", tool_name, user_id)
-            return {
-                "allow": False,
-                "message": "this bot is in readonly mode \u2014 tool rejected.",
-            }
+            return PermissionResultDeny(
+                behavior="deny",
+                message="this bot is in readonly mode \u2014 tool rejected.",
+            )
 
         # interactive mode: check existing grant first
         if session_uuid and await self._permission_manager.has_grant(
@@ -474,27 +470,29 @@ class ClaudeBridge:
             )
             # Announce without a keyboard (parity with manually-approved tools).
             await bot.send_message(chat_id=chat_id, text=text_html, parse_mode="HTML")
-            return {"allow": True}
+            return PermissionResultAllow(behavior="allow")
 
-        # interactive mode: ask via Telegram (announcement sent inside with keyboard)
-        return await self._ask_user_for_permission(
-            tool_name=tool_name,
-            tool_input=tool_input,
+        # interactive mode: ask via Telegram; result is internal dict protocol
+        result = await self._ask_user_for_permission(
             tool_use_id=tool_use_id,
             user_id=user_id,
-            session_uuid=session_uuid,
             bot=bot,
             chat_id=chat_id,
             text_html=text_html,
         )
 
+        # Persist "always allow" grant if the user chose it
+        if result.get("always") and session_uuid:
+            await self._permission_manager.add_grant(user_id, session_uuid, tool_name)
+
+        if result.get("allow"):
+            return PermissionResultAllow(behavior="allow")
+        return PermissionResultDeny(behavior="deny", message=result.get("message", ""))
+
     async def _ask_user_for_permission(
         self,
-        tool_name: str,
-        tool_input: Any,
         tool_use_id: str,
         user_id: int,
-        session_uuid: str | None,
         bot: Bot,
         chat_id: int,
         text_html: str,
@@ -537,10 +535,6 @@ class ClaudeBridge:
             await _edit_permission_message(prompt_msg, text_html, note)
         finally:
             pending_permissions.pop((user_id, tool_use_id), None)
-
-        # Persist "always allow" grant if the user chose it
-        if result.get("always") and session_uuid:
-            await self._permission_manager.add_grant(user_id, session_uuid, tool_name)
 
         return result
 
@@ -601,43 +595,11 @@ def _is_auth_error(exc: Exception) -> bool:
     return "auth" in name or "401" in msg or "unauthorized" in msg or "credential" in msg
 
 
-def _extract_session_uuid(
-    result: ResultMessage,
-    claude_home: Path | None = None,
-    claude_project_cwd: Path | None = None,
-    turn_started_at: float = 0.0,
-) -> str | None:
-    """Extract the session UUID from a ResultMessage.
-
-    Tries known SDK attribute names first, then falls back to finding
-    the most-recently-modified JSONL file in the project sessions directory.
-    This guards against SDK version changes that rename or remove the attribute.
-    """
-    # Strategy 1: try known SDK attribute names
-    for attr in ("session_id", "sessionId", "session_uuid", "id"):
-        try:
-            value = getattr(result, attr, None)
-            if value and isinstance(value, str) and len(value) >= 8:
-                return value
-        except Exception:
-            pass
-
-    # Strategy 2: filesystem fallback — newest JSONL in the project dir
-    if claude_home is not None and claude_project_cwd is not None:
-        try:
-            from tgclaude.sessions import encoded_project_dir
-            sessions_dir = claude_home / "projects" / encoded_project_dir(claude_project_cwd)
-            if sessions_dir.is_dir():
-                jsonl_files = [
-                    p for p in sessions_dir.glob("*.jsonl")
-                    if p.stat().st_mtime >= turn_started_at
-                ]
-                if jsonl_files:
-                    newest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
-                    return newest.stem  # filename without .jsonl is the UUID
-        except Exception as exc:
-            logger.debug("Session UUID filesystem fallback failed: %s", exc)
-
+def _extract_session_uuid(result: ResultMessage) -> str | None:
+    """Extract the session UUID from a ResultMessage."""
+    session_id = getattr(result, "session_id", None)
+    if session_id and isinstance(session_id, str):
+        return session_id
     return None
 
 
