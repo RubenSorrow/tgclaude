@@ -13,6 +13,7 @@ import asyncio
 import html
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -309,7 +310,11 @@ class ClaudeBridge:
                     await self._send_tool_result(content, user_id, bot, chat_id)
         elif isinstance(block, ResultMessage):
             # Extract new session UUID if the SDK emits one
-            extracted = _extract_session_uuid(block)
+            extracted = _extract_session_uuid(
+                block,
+                claude_home=self._config.claude_home,
+                claude_project_cwd=self._config.claude_project_cwd,
+            )
             if extracted:
                 return extracted
         return current_new_uuid
@@ -579,15 +584,39 @@ def _is_auth_error(exc: Exception) -> bool:
     return "auth" in name or "401" in msg or "unauthorized" in msg or "credential" in msg
 
 
-def _extract_session_uuid(result: ResultMessage) -> str | None:
-    """Extract the session UUID from a ResultMessage if present."""
-    try:
-        # The SDK may expose session_id on the result
-        uuid = getattr(result, "session_id", None)
-        if uuid:
-            return str(uuid)
-    except Exception:
-        pass
+def _extract_session_uuid(
+    result: ResultMessage,
+    claude_home: Path | None = None,
+    claude_project_cwd: Path | None = None,
+) -> str | None:
+    """Extract the session UUID from a ResultMessage.
+
+    Tries known SDK attribute names first, then falls back to finding
+    the most-recently-modified JSONL file in the project sessions directory.
+    This guards against SDK version changes that rename or remove the attribute.
+    """
+    # Strategy 1: try known SDK attribute names
+    for attr in ("session_id", "sessionId", "session_uuid", "id"):
+        try:
+            value = getattr(result, attr, None)
+            if value and isinstance(value, str) and len(value) >= 8:
+                return value
+        except Exception:
+            pass
+
+    # Strategy 2: filesystem fallback — newest JSONL in the project dir
+    if claude_home is not None and claude_project_cwd is not None:
+        try:
+            from tgclaude.sessions import encoded_project_dir
+            sessions_dir = claude_home / "projects" / encoded_project_dir(claude_project_cwd)
+            if sessions_dir.is_dir():
+                jsonl_files = list(sessions_dir.glob("*.jsonl"))
+                if jsonl_files:
+                    newest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
+                    return newest.stem  # filename without .jsonl is the UUID
+        except Exception as exc:
+            logger.debug("Session UUID filesystem fallback failed: %s", exc)
+
     return None
 
 

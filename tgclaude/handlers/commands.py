@@ -127,8 +127,8 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 2. Immediately detach in DB
     await db.clear_active_session(user_id)
 
-    # 3. Resolve any pending "waiting for reason" permission as plain deny
-    _cancel_waiting_for_reason(user_id)
+    # 3. Resolve all pending permissions (including non-WAITING_FOR_REASON) as deny
+    _cancel_all_pending_permissions(user_id)
 
     # 4. Deferred flag only when a turn is in-flight
     lock = _user_locks.get(user_id)
@@ -217,8 +217,8 @@ async def picker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Purge message queue
     _purge_queue(user_id)
 
-    # Cancel any "waiting for reason" state — changing session invalidates the prompt
-    _cancel_waiting_for_reason(user_id)
+    # Cancel all pending permissions — changing session invalidates every prompt
+    _cancel_all_pending_permissions(user_id)
 
     lock = _user_locks.get(user_id)
     turn_in_flight = lock is not None and lock.locked()
@@ -462,5 +462,19 @@ def _cancel_waiting_for_reason(user_id: int) -> None:
             tool_use_id,
         )
         future.set_result({"allow": False})
+
+
+def _cancel_all_pending_permissions(user_id: int) -> None:
+    """Resolve all pending permission futures for this user as denied.
+
+    Per DESIGN §6: session-mutating commands (/new, picker-attach) must
+    resolve all outstanding permission prompts, not just the WAITING_FOR_REASON
+    sub-state. Resolving each future causes _ask_user_for_permission in the
+    bridge to edit the message and remove the inline keyboard automatically.
+    """
+    _cancel_waiting_for_reason(user_id)
+    for (uid, _tool_use_id), future in list(pending_permissions.items()):
+        if uid == user_id and not future.done():
+            future.set_result({"allow": False})
 
 

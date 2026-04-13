@@ -159,7 +159,20 @@ async def alerts_poller(context: ContextTypes.DEFAULT_TYPE) -> None:
             bucket.resets_at.isoformat() if bucket.resets_at is not None else "null"
         )
 
-        # Check if this bucket reset since the last alert was fired
+        # Bucket reset detection: clear stale state before the threshold loop.
+        # Query the lowest threshold as a sentinel; if its stored resets_at differs
+        # from the current one the window has rolled over — wipe the whole bucket
+        # once, up front, so the threshold loop below only writes fresh rows.
+        sentinel_threshold = min(thresholds) if thresholds else None
+        if sentinel_threshold is not None:
+            sentinel_state = await db.get_alert_state(bucket_key, sentinel_threshold)
+            if sentinel_state is not None and sentinel_state != current_resets_at:
+                await db.clear_alert_state_for_bucket(bucket_key)
+                log.debug(
+                    "alerts_poller: cleared stale alert state for bucket=%s (window reset)",
+                    bucket_key,
+                )
+
         for threshold in sorted(thresholds):
             state = await db.get_alert_state(bucket_key, threshold)
 
@@ -183,15 +196,6 @@ async def alerts_poller(context: ContextTypes.DEFAULT_TYPE) -> None:
                         threshold,
                         bucket.utilization,
                     )
-            else:
-                # Utilization dropped below threshold — if resets_at changed, clear state
-                if state is not None and state != current_resets_at:
-                    await db.clear_alert_state_for_bucket(bucket_key)
-                    log.debug(
-                        "alerts_poller: cleared alert state for bucket=%s (resets_at changed)",
-                        bucket_key,
-                    )
-                    break
 
     if not messages_to_send:
         return
