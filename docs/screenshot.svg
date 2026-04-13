@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="580" viewBox="0 0 600 580">
+  <defs>
+    <style>
+      .bg        { fill: #17212b; }
+      .header-bg { fill: #1f2d3d; }
+      .divider   { fill: #243447; }
+      .bubble-user  { fill: #2b5278; }
+      .bubble-bot   { fill: #182533; }
+      .bubble-perm  { fill: #1c2f42; }
+      .text-white   { fill: #e8e8e8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .text-mono    { fill: #a8d4ff; font-family: 'Courier New', 'Fira Code', monospace; }
+      .text-label   { fill: #6f8ba0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .text-time    { fill: #6f8ba0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .text-tool    { fill: #5cb3e8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .text-perm    { fill: #c8d8e8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .btn-yes      { fill: #2a5e35; }
+      .btn-always   { fill: #4a3c0a; }
+      .btn-no       { fill: #5e2a2a; }
+      .btn-reason   { fill: #3a2a5e; }
+      .btn-text     { fill: #e8e8e8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 12px; }
+      .avatar-bg    { fill: #2b5278; }
+      .online-dot   { fill: #4dcd5e; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="600" height="580" class="bg" rx="12"/>
+
+  <!-- Header bar -->
+  <rect x="0" y="0" width="600" height="60" class="header-bg" rx="0"/>
+  <rect x="0" y="48" width="600" height="12" class="header-bg"/>
+
+  <!-- Back arrow -->
+  <path d="M16 30 L26 20 M16 30 L26 40" stroke="#5cb3e8" stroke-width="2" fill="none" stroke-linecap="round"/>
+
+  <!-- Avatar circle -->
+  <circle cx="52" cy="30" r="18" class="avatar-bg"/>
+  <text x="52" y="36" text-anchor="middle" font-size="18" fill="white">🤖</text>
+
+  <!-- Online dot -->
+  <circle cx="64" cy="42" r="5" class="online-dot" stroke="#17212b" stroke-width="2"/>
+
+  <!-- Bot name and status -->
+  <text x="78" y="25" class="text-white" font-size="16" font-weight="600">tgclaude</text>
+  <text x="78" y="42" class="text-label" font-size="12">online</text>
+
+  <!-- Header icons (search, menu) -->
+  <circle cx="555" cy="30" r="3" fill="#6f8ba0"/>
+  <circle cx="567" cy="30" r="3" fill="#6f8ba0"/>
+  <circle cx="579" cy="30" r="3" fill="#6f8ba0"/>
+
+  <!-- Divider below header -->
+  <rect x="0" y="59" width="600" height="1" class="divider"/>
+
+  <!-- ─── Message 1: User message ─── -->
+  <!-- Bubble -->
+  <rect x="200" y="76" width="366" height="38" class="bubble-user" rx="14"/>
+  <!-- Tail (bottom-right) -->
+  <path d="M566 100 Q578 108 574 114 Q566 106 558 106 Z" class="bubble-user"/>
+  <text x="382" y="100" text-anchor="middle" class="text-white" font-size="14">What files are in the src directory?</text>
+  <text x="558" y="122" text-anchor="end" class="text-time" font-size="11">14:03</text>
+
+  <!-- ─── Message 2: Tool announcement ─── -->
+  <!-- Bubble -->
+  <rect x="18" y="136" width="280" height="66" class="bubble-bot" rx="14"/>
+  <!-- Tail (bottom-left) -->
+  <path d="M18 180 Q6 188 10 194 Q18 186 26 186 Z" class="bubble-bot"/>
+  <!-- Tool icon + label row -->
+  <text x="34" y="158" class="text-tool" font-size="13" font-weight="600">🔧 Using tool: Glob</text>
+  <!-- Code block background -->
+  <rect x="28" y="164" width="256" height="24" fill="#0e1c27" rx="5"/>
+  <text x="36" y="181" class="text-mono" font-size="11">pattern="src/**/*.py"</text>
+  <text x="289" y="210" text-anchor="end" class="text-time" font-size="11">14:03</text>
+
+  <!-- ─── Message 3: Bot reply with file list ─── -->
+  <!-- Bubble -->
+  <rect x="18" y="222" width="310" height="156" class="bubble-bot" rx="14"/>
+  <!-- Tail (bottom-left) -->
+  <path d="M18 356 Q6 364 10 370 Q18 362 26 362 Z" class="bubble-bot"/>
+  <!-- Header text -->
+  <text x="34" y="244" class="text-white" font-size="13" font-weight="600">Found 8 files in src/:</text>
+  <!-- Code block bg -->
+  <rect x="28" y="250" width="284" height="112" fill="#0e1c27" rx="5"/>
+  <text x="38" y="268" class="text-mono" font-size="11">src/__init__.py</text>
+  <text x="38" y="283" class="text-mono" font-size="11">src/bot.py</text>
+  <text x="38" y="298" class="text-mono" font-size="11">src/context.py</text>
+  <text x="38" y="313" class="text-mono" font-size="11">src/handlers/</text>
+  <text x="38" y="328" class="text-mono" font-size="11">  ├── messages.py</text>
+  <text x="38" y="343" class="text-mono" font-size="11">  ├── permissions.py</text>
+  <text x="38" y="358" class="text-mono" font-size="11">  └── sessions.py</text>
+  <text x="320" y="386" text-anchor="end" class="text-time" font-size="11">14:03</text>
+
+  <!-- ─── Message 4: Permission prompt ─── -->
+  <!-- Bubble -->
+  <rect x="18" y="396" width="380" height="152" class="bubble-perm" rx="14"/>
+  <!-- Tail (bottom-left) -->
+  <path d="M18 524 Q6 532 10 538 Q18 530 26 530 Z" class="bubble-perm"/>
+  <!-- Lock icon + heading -->
+  <text x="34" y="420" class="text-tool" font-size="13" font-weight="600">🔐 Permission required</text>
+  <!-- Description -->
+  <text x="34" y="439" class="text-perm" font-size="12">Claude wants to run:</text>
+  <!-- Command block -->
+  <rect x="28" y="445" width="354" height="24" fill="#0e1c27" rx="5"/>
+  <text x="36" y="462" class="text-mono" font-size="11">Write  →  src/handlers/sessions.py</text>
+  <!-- Inline keyboard buttons: row 1 -->
+  <rect x="28" y="476" width="162" height="28" class="btn-yes" rx="8"/>
+  <text x="109" y="494" text-anchor="middle" class="btn-text">✅ Yes</text>
+  <rect x="198" y="476" width="170" height="28" class="btn-always" rx="8"/>
+  <text x="283" y="494" text-anchor="middle" class="btn-text">⭐ Always allow</text>
+  <!-- Inline keyboard buttons: row 2 -->
+  <rect x="28" y="512" width="162" height="28" class="btn-no" rx="8"/>
+  <text x="109" y="530" text-anchor="middle" class="btn-text">❌ No</text>
+  <rect x="198" y="512" width="170" height="28" class="btn-reason" rx="8"/>
+  <text x="283" y="530" text-anchor="middle" class="btn-text">✏️ No, and say why</text>
+  <text x="390" y="556" text-anchor="end" class="text-time" font-size="11">14:04</text>
+
+  <!-- Bottom input bar -->
+  <rect x="0" y="560" width="600" height="20" class="header-bg"/>
+  <rect x="0" y="559" width="600" height="1" class="divider"/>
+</svg>
