@@ -168,11 +168,14 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     db = context.bot_data["db"]
     session_uuid = await db.get_active_session(user_id)
-    session_display = session_uuid or "<i>none (detached)</i>"
+    if session_uuid:
+        session_line = f"<b>Active session:</b> <code>{session_uuid}</code>"
+    else:
+        session_line = "<b>Active session:</b> <i>none (detached)</i>"
 
     await update.message.reply_html(
         f"<b>User ID:</b> <code>{user_id}</code>\n"
-        f"<b>Active session:</b> <code>{session_display}</code>"
+        f"{session_line}"
     )
 
 

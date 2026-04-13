@@ -13,6 +13,7 @@ import asyncio
 import html
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -74,14 +75,20 @@ def _truncate_tool_input(raw: Any) -> tuple[str, bool, int]:
 
     lines = full.splitlines()
     if len(lines) > _TOOL_INPUT_MAX_LINES:
-        lines = lines[:_TOOL_INPUT_MAX_LINES]
-        truncated = "\n".join(lines)
-        return truncated, True, total
+        by_lines = "\n".join(lines[:_TOOL_INPUT_MAX_LINES])
+    else:
+        by_lines = full
 
     if len(full) > _TOOL_INPUT_MAX_CHARS:
-        return full[:_TOOL_INPUT_MAX_CHARS], True, total
+        by_chars = full[:_TOOL_INPUT_MAX_CHARS]
+    else:
+        by_chars = full
 
-    return full, False, total
+    if by_lines is full and by_chars is full:
+        return full, False, total
+
+    truncated = by_lines if len(by_lines) <= len(by_chars) else by_chars
+    return truncated, True, total
 
 
 def _build_tool_announcement(
@@ -195,6 +202,7 @@ class ClaudeBridge:
 
         new_session_uuid: str | None = session_uuid
         sdk_succeeded = False
+        turn_started_at = time.time()
         try:
             async for block in query(
                 prompt=text,
@@ -208,6 +216,7 @@ class ClaudeBridge:
                     bot=bot,
                     chat_id=chat_id,
                     current_new_uuid=new_session_uuid,
+                    turn_started_at=turn_started_at,
                 )
             sdk_succeeded = True
         except Exception as exc:
@@ -293,6 +302,7 @@ class ClaudeBridge:
         bot: Bot,
         chat_id: int,
         current_new_uuid: str | None,
+        turn_started_at: float = 0.0,
     ) -> str | None:
         """Route a single SDK content block to the correct handler.
 
@@ -314,6 +324,7 @@ class ClaudeBridge:
                 block,
                 claude_home=self._config.claude_home,
                 claude_project_cwd=self._config.claude_project_cwd,
+                turn_started_at=turn_started_at,
             )
             if extracted:
                 return extracted
@@ -594,6 +605,7 @@ def _extract_session_uuid(
     result: ResultMessage,
     claude_home: Path | None = None,
     claude_project_cwd: Path | None = None,
+    turn_started_at: float = 0.0,
 ) -> str | None:
     """Extract the session UUID from a ResultMessage.
 
@@ -616,7 +628,10 @@ def _extract_session_uuid(
             from tgclaude.sessions import encoded_project_dir
             sessions_dir = claude_home / "projects" / encoded_project_dir(claude_project_cwd)
             if sessions_dir.is_dir():
-                jsonl_files = list(sessions_dir.glob("*.jsonl"))
+                jsonl_files = [
+                    p for p in sessions_dir.glob("*.jsonl")
+                    if p.stat().st_mtime >= turn_started_at
+                ]
                 if jsonl_files:
                     newest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
                     return newest.stem  # filename without .jsonl is the UUID

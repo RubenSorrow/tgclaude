@@ -219,7 +219,7 @@ def _render_tokens(tokens: list[Token]) -> str:  # noqa: C901  (complex by neces
 
         # ── HTML block (pass-through) ────────────────────────────────────────
         if tok.type == "html_block":
-            output.append(tok.content)
+            output.append(html.escape(tok.content))
             i += 1
             continue
 
