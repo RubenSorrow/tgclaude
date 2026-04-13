@@ -60,8 +60,8 @@ Send `/start` to [@userinfobot](https://t.me/userinfobot). Copy the numeric ID.
 ### 3. Clone and install
 
 ```bash
-git clone https://github.com/yourusername/telegram-claude-chatbot.git
-cd telegram-claude-chatbot/tgclaude
+git clone https://github.com/RubenSorrow/tgclaude.git
+cd tgclaude
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .

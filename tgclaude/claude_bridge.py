@@ -19,7 +19,7 @@ from typing import Any
 
 import aiosqlite
 
-from claude_agent_sdk import query, ClaudeOptions
+from claude_agent_sdk import query, ClaudeAgentOptions
 from claude_agent_sdk.types import (
     TextBlock,
     ThinkingBlock,
@@ -173,7 +173,7 @@ class ClaudeBridge:
 
         Per §4 and §5:
         1. Look up active session UUID from DB.
-        2. Build ClaudeOptions with cwd=config.claude_project_cwd.
+        2. Build ClaudeAgentOptions with cwd=config.claude_project_cwd.
         3. Send typing action before starting.
         4. Iterate SDK response blocks and dispatch each.
         5. Run session-persist step.
@@ -264,8 +264,8 @@ class ClaudeBridge:
         session_uuid: str | None,
         bot: Bot,
         chat_id: int,
-    ) -> ClaudeOptions:
-        """Construct ClaudeOptions for this turn."""
+    ) -> ClaudeAgentOptions:
+        """Construct ClaudeAgentOptions for this turn."""
         kwargs: dict[str, Any] = {
             "cwd": str(self._config.claude_project_cwd),
         }
@@ -292,7 +292,7 @@ class ClaudeBridge:
                 )
             kwargs["can_use_tool"] = can_use_tool
 
-        return ClaudeOptions(**kwargs)
+        return ClaudeAgentOptions(**kwargs)
 
     # ------------------------------------------------------------------
     # Block dispatcher
