@@ -161,6 +161,15 @@ class Database:
             row = await cursor.fetchone()
             return row[0] if row else None
 
+    async def get_any_alert_state_for_bucket(self, bucket: str) -> str | None:
+        """Return the resets_at value from any row for bucket, or None if no rows exist."""
+        async with self._conn.execute(
+            "SELECT last_fired_for FROM alert_state WHERE bucket = ? LIMIT 1",
+            (bucket,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
     async def set_alert_state(
         self, bucket: str, threshold: int, resets_at: str
     ) -> None:

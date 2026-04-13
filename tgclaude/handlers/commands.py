@@ -376,7 +376,7 @@ async def _build_picker(
     now = datetime.now(timezone.utc)
 
     if not sessions:
-        text = prefix + "No sessions yet \u2014 tap <b>New</b> to start one."
+        text = prefix + "No sessions yet \u2014 tap <i>New</i> to start one."
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("\u25b6 New conversation", callback_data="pick:new"),
         ]])

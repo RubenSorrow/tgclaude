@@ -160,18 +160,18 @@ async def alerts_poller(context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
         # Bucket reset detection: clear stale state before the threshold loop.
-        # Query the lowest threshold as a sentinel; if its stored resets_at differs
+        # Query any existing row for the bucket; if its stored resets_at differs
         # from the current one the window has rolled over — wipe the whole bucket
         # once, up front, so the threshold loop below only writes fresh rows.
-        sentinel_threshold = min(thresholds) if thresholds else None
-        if sentinel_threshold is not None:
-            sentinel_state = await db.get_alert_state(bucket_key, sentinel_threshold)
-            if sentinel_state is not None and sentinel_state != current_resets_at:
-                await db.clear_alert_state_for_bucket(bucket_key)
-                log.debug(
-                    "alerts_poller: cleared stale alert state for bucket=%s (window reset)",
-                    bucket_key,
-                )
+        # Using any row (rather than min(thresholds)) means removed thresholds
+        # don't leave stale rows that are never consulted as sentinels.
+        any_state = await db.get_any_alert_state_for_bucket(bucket_key)
+        if any_state is not None and any_state != current_resets_at:
+            await db.clear_alert_state_for_bucket(bucket_key)
+            log.debug(
+                "alerts_poller: cleared stale alert state for bucket=%s (window reset)",
+                bucket_key,
+            )
 
         for threshold in sorted(thresholds):
             state = await db.get_alert_state(bucket_key, threshold)

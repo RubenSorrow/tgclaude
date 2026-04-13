@@ -403,9 +403,15 @@ class ClaudeBridge:
         # Dispatch any file written by a preceding Write tool now that it exists.
         tool_use_id = getattr(block, "tool_use_id", None)
         if tool_use_id:
+            # Skip dispatch if the tool reported an error.
+            tool_errored = getattr(block, "is_error", False)
+            if not tool_errored:
+                # Fallback: check content text for error indicators when is_error
+                # is absent from the object (older SDK versions).
+                tool_errored = "error" in content.lower() if content else False
             user_writes = self._pending_writes.get(user_id, {})
             file_path_str = user_writes.pop(tool_use_id, None)
-            if file_path_str:
+            if file_path_str and not tool_errored:
                 from pathlib import Path
                 try:
                     await dispatch_file(Path(file_path_str), bot, chat_id)
