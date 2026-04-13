@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from tgclaude import __version__
 from tgclaude.auth import read_access_token
 
 log = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ class UsageClient:
         return {
             "Authorization": f"Bearer {token}",
             "anthropic-beta": BETA_HEADER,
-            "User-Agent": "claude-cli/1.0.0",
+            "User-Agent": f"claude-cli/{__version__}",
         }
 
     @staticmethod

@@ -15,6 +15,8 @@ import json
 import logging
 from typing import Any
 
+import aiosqlite
+
 from claude_agent_sdk import query, ClaudeOptions
 from claude_agent_sdk.types import (
     TextBlock,
@@ -552,6 +554,13 @@ class ClaudeBridge:
                 logger.debug(
                     "Persisted session %s for user %d", new_session_uuid, user_id
                 )
+        except aiosqlite.IntegrityError:
+            logger.warning(
+                "Session UUID %s is already attached to another user; "
+                "skipping persist for user %d (race condition)",
+                new_session_uuid,
+                user_id,
+            )
         except Exception as exc:
             logger.exception(
                 "Failed to persist session for user %d: %s", user_id, exc

@@ -96,11 +96,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # 4. Contention handling
     if lock.locked():
         if queue.full():
-            # Determine correct rejection message
             has_pending_perm = any(uid == user_id for (uid, _) in pending_permissions)
-            if user_id in waiting_for_reason:
-                reply = "Waiting for your denial reason — type it now."
-            elif has_pending_perm:
+            if has_pending_perm:
                 reply = "Still waiting for your permission tap above."
             else:
                 reply = "Claude is still working on your previous message."
@@ -173,6 +170,14 @@ async def _drain_queue(
         except asyncio.QueueEmpty:
             break
 
+        # Pre-turn check: /new may have fired after get_nowait() but before run_turn.
+        # Discard the already-dequeued message rather than executing it against
+        # the cleared session.
+        if user_id in _drain_cancelled:
+            _drain_cancelled.discard(user_id)
+            logger.debug("Drain cancelled for user %d (pre-turn check)", user_id)
+            break
+
         logger.debug("Draining queued message for user %d", user_id)
         await bridge.run_turn(
             user_id=user_id,
@@ -181,7 +186,8 @@ async def _drain_queue(
             chat_id=chat_id,
         )
 
+        # Post-turn check: /new may have fired during run_turn.
         if user_id in _drain_cancelled:
             _drain_cancelled.discard(user_id)
-            logger.debug("Drain cancelled for user %d after /new", user_id)
+            logger.debug("Drain cancelled for user %d (post-turn check)", user_id)
             break

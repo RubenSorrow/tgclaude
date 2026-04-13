@@ -10,6 +10,13 @@ stores only a tiny SQLite database of your own.
 
 ---
 
+## Screenshots
+
+![tgclaude bot in action](docs/screenshot.png)
+<!-- Replace with a real screenshot once the bot is deployed -->
+
+---
+
 ## Prerequisites
 
 - A VPS (or any server) with **outbound internet access**. Tailscale-only hosts

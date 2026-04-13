@@ -385,7 +385,7 @@ async def _build_picker(
     rows: list[list[InlineKeyboardButton]] = []
     for s in sessions:
         marker = "✅ " if s.session_uuid == active_uuid else ""
-        label = f"{marker}\U0001f4dd {s.title}  \u00b7  {_relative_time(s.mtime, now)}"
+        label = f'{marker}\U0001f4dd "{s.title}"  \u00b7  {_relative_time(s.mtime, now)}'
         rows.append([
             InlineKeyboardButton(label, callback_data=f"pick:{s.session_uuid}")
         ])
