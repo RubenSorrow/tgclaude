@@ -41,16 +41,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     db = context.bot_data["db"]
-    greeting = (
-        "👋 Welcome to <b>tgclaude</b>!\n"
-        "I bridge your Claude Max plan to Telegram. "
-        "Pick a session below or start a new one.\n\n"
-    )
+    welcomed_key = f"welcomed_{user_id}"
+    already_welcomed = await db.get_setting(welcomed_key)
+
+    if not already_welcomed:
+        await db.set_setting(welcomed_key, "1")
+        greeting = (
+            "👋 Welcome to <b>tgclaude</b>!\n"
+            "I bridge your Claude Max plan to Telegram. "
+            "Pick a session below or start a new one.\n\n"
+        )
+    else:
+        greeting = ""
 
     active_uuid = await db.get_active_session(user_id)
-    picker_text, keyboard = await _build_picker(
-        config, active_uuid, prefix=greeting
-    )
+    picker_text, keyboard = await _build_picker(config, active_uuid, prefix=greeting)
     await update.message.reply_html(picker_text, reply_markup=keyboard)
 
 
@@ -110,6 +115,9 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     db = context.bot_data["db"]
 
+    # Read BEFORE clearing (fix for dead code bug)
+    current_session = await db.get_active_session(user_id)
+
     # 1. Purge the message queue
     _purge_queue(user_id)
 
@@ -126,14 +134,11 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if turn_in_flight:
         detach_after_turn[user_id] = True
         reattach_after_turn.pop(user_id, None)
-        reply = (
-            "Starting a new conversation after Claude finishes the current turn."
-        )
+        reply = "Starting a new conversation after Claude finishes the current turn."
     else:
         detach_after_turn.pop(user_id, None)
         reattach_after_turn.pop(user_id, None)
-        active = await db.get_active_session(user_id)
-        if active is None:
+        if current_session is None:
             reply = "Already detached \u2014 send a message to start a new session."
         else:
             reply = "Session cleared. Send a message to start a new conversation."
@@ -227,6 +232,14 @@ async def picker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_text = "Ready for a new conversation. Send a message to start."
     else:
         new_uuid = payload
+        existing_user = await db.get_user_for_session(new_uuid)
+        if existing_user is not None and existing_user != user_id:
+            await query.answer("This session is already in use by another user.")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="That session is currently attached to another user. Choose a different one.",
+            )
+            return
         await db.set_active_session(user_id, new_uuid)
         if turn_in_flight:
             reattach_after_turn[user_id] = new_uuid
@@ -330,12 +343,6 @@ async def permission_callback(
         logger.warning("Unknown permission choice %r in callback_data", choice)
         await query.answer()
         return
-
-    # For yes/always/no: clean up the keyboard right away
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception as exc:
-        logger.debug("Could not remove keyboard from permission message: %s", exc)
 
 
 # ---------------------------------------------------------------------------

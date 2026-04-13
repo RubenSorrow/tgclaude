@@ -6,9 +6,6 @@ from tgclaude.db import Database
 
 log = logging.getLogger(__name__)
 
-READONLY_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob", "WebFetch"})
-
-
 class PermissionManager:
     """Manages per-(user, session) tool allow-lists backed by SQLite.
 

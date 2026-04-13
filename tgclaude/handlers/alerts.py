@@ -38,11 +38,15 @@ async def alerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
       /alerts reset          → clear runtime DB overrides
       /alerts (no args)      → show current status
     """
-    if update.message is None:
+    if update.message is None or update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+    if user_id not in config.allowed_user_ids:
+        log.debug("Ignoring /alerts from unlisted user %d", user_id)
         return
 
     db: Database = context.bot_data["db"]
-    config = context.bot_data["config"]
 
     raw_text: str = update.message.text or ""
     # Strip the command prefix (/alerts[@botname]) and leading whitespace

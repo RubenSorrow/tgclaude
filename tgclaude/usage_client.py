@@ -40,6 +40,10 @@ class UsageFetchError(Exception):
     """Raised on non-auth HTTP errors while fetching usage data."""
 
 
+class UsageSubscriptionError(UsageFetchError):
+    """Raised when the account is not on a subscription plan."""
+
+
 @dataclass
 class BucketUsage:
     utilization: float  # 0.0–100.0
@@ -60,17 +64,20 @@ class UsageData:
 class UsageClient:
     """Fetches and caches usage data from the Anthropic OAuth usage endpoint."""
 
-    def __init__(self, http_client: httpx.AsyncClient, claude_home: Path) -> None:
+    def __init__(self, http_client: httpx.AsyncClient, claude_home: Path, redaction_filter=None) -> None:
         self._http = http_client
         self._claude_home = claude_home
         self._cached_data: UsageData | None = None
         self._cached_at: float | None = None
         self._token: str | None = None
+        self._redaction_filter = redaction_filter  # may be None if logging not yet set up
 
     def _load_token(self) -> str:
-        token = read_access_token(self._claude_home)
-        self._token = token
-        return token
+        new_token = read_access_token(self._claude_home)
+        if self._redaction_filter is not None and new_token != self._token:
+            self._redaction_filter.add_secret(new_token)
+        self._token = new_token
+        return new_token
 
     def _request_headers(self, token: str) -> dict[str, str]:
         return {
@@ -112,17 +119,20 @@ class UsageClient:
         )
 
     async def _fetch(self, token: str) -> UsageData:
-        response = await self._http.get(
-            USAGE_ENDPOINT,
-            headers=self._request_headers(token),
-        )
+        response = await self._http.get(USAGE_ENDPOINT, headers=self._request_headers(token))
         if response.status_code == 401:
             raise UsageAuthError("401 Unauthorized from usage endpoint")
         if response.status_code != 200:
-            raise UsageFetchError(
-                f"Usage endpoint returned HTTP {response.status_code}: {response.text[:200]}"
-            )
+            body = response.text[:400]
+            if "subscription plans" in body.lower():
+                raise UsageSubscriptionError(body)
+            raise UsageFetchError(f"Usage endpoint returned HTTP {response.status_code}: {body}")
         payload: dict[str, Any] = response.json()
+        # Also check 200 response that has an error body (some APIs return 200 with error)
+        if isinstance(payload, dict):
+            error_val = payload.get("error") or payload.get("message", "")
+            if isinstance(error_val, str) and "subscription plans" in error_val.lower():
+                raise UsageSubscriptionError(error_val)
         return self._parse_response(payload)
 
     async def get_usage(self, bypass_cache: bool = False) -> UsageData:
@@ -247,7 +257,7 @@ def render_usage(data: UsageData, display_tz: str | None, cache_age: float | Non
         Extra usage: not enabled
     """
     title = "📊 Usage"
-    if cache_age is not None:
+    if cache_age is not None and cache_age > 1.0:  # only show when actually cached
         title += f"  <i>(updated {int(cache_age)}s ago)</i>"
 
     buckets: list[tuple[str, BucketUsage]] = []

@@ -115,36 +115,16 @@ def chunk_message(html: str) -> list[str]:
        - Re-open them at start of chunk N+1 (outermost first)
     5. Never split inside a tag itself (i.e. between < and >)
     6. Tags that need balancing: <b>, <i>, <code>, <pre>, <blockquote>, <a href="...">
-    7. Append (X/Y) suffix only when Y > 1
 
-    Returns a list of HTML strings, each <= TARGET_LENGTH chars.
+    Returns raw chunks without (X/Y) suffixes — caller adds suffixes if needed.
     """
     if not html:
         return []
 
-    # Fast path: fits in one chunk with no suffix.
     if len(html) <= TARGET_LENGTH:
         return [html]
 
-    # We don't know Y upfront, so we collect raw chunks then add suffixes.
-    raw_chunks: list[str] = _collect_chunks(html)
-
-    if len(raw_chunks) == 1:
-        return raw_chunks
-
-    total = len(raw_chunks)
-    result: list[str] = []
-    for idx, chunk in enumerate(raw_chunks, start=1):
-        suffix = f" ({idx}/{total})"
-        # If adding the suffix would overflow, trim the chunk slightly.
-        # (Suffix is typically ≤8 chars so this is an edge case.)
-        if len(chunk) + len(suffix) > TARGET_LENGTH:
-            safe = _trim_to_outside_tag(chunk, TARGET_LENGTH - len(suffix))
-            result.append(safe + suffix)
-        else:
-            result.append(chunk + suffix)
-
-    return result
+    return _collect_chunks(html)
 
 
 def _collect_chunks(html: str) -> list[str]:  # noqa: C901

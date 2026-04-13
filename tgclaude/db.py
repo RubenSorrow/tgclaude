@@ -89,6 +89,15 @@ class Database:
         )
         await self._conn.commit()
 
+    async def get_user_for_session(self, session_uuid: str) -> int | None:
+        """Return the telegram_user_id currently attached to session_uuid, or None."""
+        async with self._conn.execute(
+            "SELECT telegram_user_id FROM active_sessions WHERE session_uuid = ?",
+            (session_uuid,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
     async def clear_active_session(self, user_id: int) -> None:
         """Detach user_id (set session_uuid to NULL)."""
         await self._conn.execute(

@@ -33,7 +33,7 @@ from tgclaude.handlers.commands import (
     start_command,
     whoami_command,
 )
-from tgclaude.handlers.messages import message_handler
+from tgclaude.handlers.messages import message_handler, unsupported_message_handler
 from tgclaude.handlers.usage import usage_command
 from tgclaude.permissions import PermissionManager
 from tgclaude.usage_client import UsageClient
@@ -59,7 +59,8 @@ async def _startup(app: Application) -> None:
     http_client = httpx.AsyncClient(timeout=30.0)
     app.bot_data["_http_client"] = http_client
 
-    usage_client = UsageClient(http_client, config.claude_home)
+    redaction_filter = app.bot_data.get("_redaction_filter")
+    usage_client = UsageClient(http_client, config.claude_home, redaction_filter=redaction_filter)
     app.bot_data["usage_client"] = usage_client
 
     permission_manager = PermissionManager(db)
@@ -103,19 +104,28 @@ def setup_logging(config) -> None:
 
 def build_redaction_filter(secrets: list[str]) -> logging.Filter:
     """Return a Filter that replaces known secret literals with <REDACTED>.
-
     Also applies a regex fallback for token-shaped strings.
     """
-    # Regex: 20-200 chars of alphanum + common token chars, no whitespace
     _TOKEN_RE = re.compile(r"[A-Za-z0-9_.+/=-]{20,200}")
+    _mutable_secrets = list(secrets)  # mutable so new tokens can be added
 
     class _RedactionFilter(logging.Filter):
+        def add_secret(self, secret: str) -> None:
+            """Register a new secret literal for redaction (e.g. after token refresh)."""
+            if secret and secret not in _mutable_secrets:
+                _mutable_secrets.append(secret)
+
         def filter(self, record: logging.LogRecord) -> bool:
             msg = str(record.getMessage())
-            for secret in secrets:
+            # Pass 1: literal replacements (primary defense)
+            for secret in _mutable_secrets:
                 if secret and secret in msg:
                     msg = msg.replace(secret, "<REDACTED>")
-            # Regex fallback: replace long token-shaped strings not already REDACTED
+            # Pass 2: regex fallback for token-shaped strings not already redacted
+            msg = _TOKEN_RE.sub(
+                lambda m: "<REDACTED>" if len(m.group()) >= 20 else m.group(),
+                msg,
+            )
             record.msg = msg
             record.args = ()
             return True
@@ -123,13 +133,14 @@ def build_redaction_filter(secrets: list[str]) -> logging.Filter:
     return _RedactionFilter()
 
 
-def _install_redaction_filter(config, access_token: str) -> None:
-    """Attach the redaction filter to the root logger."""
+def _install_redaction_filter(config, access_token: str) -> logging.Filter:
+    """Attach the redaction filter to the root logger and return it."""
     secrets = [config.bot_token, access_token]
     flt = build_redaction_filter(secrets)
     root = logging.getLogger()
     for handler in root.handlers:
         handler.addFilter(flt)
+    return flt
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +169,7 @@ def main() -> None:
 
     # 3. Logging
     setup_logging(config)
-    _install_redaction_filter(config, access_token)
+    redaction_filter = _install_redaction_filter(config, access_token)
 
     logger.info(
         "tgclaude initialising | allowed_users=%d | permission_mode=%s",
@@ -178,6 +189,7 @@ def main() -> None:
     # Stash config and token for startup hook
     app.bot_data["config"] = config
     app.bot_data["_access_token"] = access_token
+    app.bot_data["_redaction_filter"] = redaction_filter
 
     # Register command handlers
     app.add_handler(CommandHandler("start", start_command))
@@ -190,6 +202,9 @@ def main() -> None:
     # Free-text message handler
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler)
+    )
+    app.add_handler(
+        MessageHandler(~filters.COMMAND & ~filters.TEXT, unsupported_message_handler)
     )
 
     # Callback query handlers

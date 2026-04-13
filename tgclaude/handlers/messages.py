@@ -104,7 +104,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if lock.locked():
         if queue.full():
             # Determine correct rejection message
-            if user_id in waiting_for_reason:
+            has_pending_perm = any(uid == user_id for (uid, _) in pending_permissions)
+            if user_id in waiting_for_reason or has_pending_perm:
                 reply = "Still waiting for your permission tap above."
             else:
                 reply = "Claude is still working on your previous message."
@@ -132,6 +133,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # Drain the queue sequentially
         await _drain_queue(user_id, chat_id, bridge, bot, queue)
+
+
+# ---------------------------------------------------------------------------
+# Unsupported media handler
+# ---------------------------------------------------------------------------
+
+
+async def unsupported_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reject non-text, non-command messages with an explanatory reply."""
+    if update.effective_user is None or update.message is None:
+        return
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+    if user_id not in config.allowed_user_ids:
+        return  # silent drop per §10
+    await update.message.reply_text("I only understand text messages.")
 
 
 # ---------------------------------------------------------------------------

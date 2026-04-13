@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 READONLY_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob", "WebFetch"})
 
 _VALID_PERMISSION_MODES = frozenset({"interactive", "bypass", "readonly"})
+
+_BOT_TOKEN_RE = re.compile(r'^\d{1,20}:[A-Za-z0-9_-]{30,60}$')
 
 
 @dataclass(frozen=True)
@@ -48,7 +51,7 @@ def load_config() -> Config:
     """
     load_dotenv()
 
-    bot_token = _require_str("BOT_TOKEN")
+    bot_token = _parse_bot_token()
     allowed_user_ids = _parse_allowed_user_ids()
     claude_home = _parse_path("CLAUDE_HOME", default="~/.claude")
     claude_project_cwd = _parse_path("CLAUDE_PROJECT_CWD", default="~")
@@ -82,6 +85,19 @@ def _require_str(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
         _die(f"{name} is required but missing or empty.")
+    return value
+
+
+def _parse_bot_token() -> str:
+    value = os.getenv("BOT_TOKEN", "").strip()
+    if not value:
+        _die("BOT_TOKEN is required but missing or empty.")
+    if not _BOT_TOKEN_RE.match(value):
+        _die(
+            "BOT_TOKEN format is invalid. "
+            "Expected format: 1234567890:ABCdefGHIJklmnopqrsTUVwxyz-… "
+            "(digits, colon, 30-60 alphanumeric/underscore/hyphen characters)."
+        )
     return value
 
 

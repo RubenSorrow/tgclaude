@@ -114,17 +114,13 @@ def _build_permission_keyboard(tool_use_id: str) -> InlineKeyboardMarkup:
 
 async def _edit_permission_message(
     msg: Message,
+    original_html: str,
     resolution_note: str,
 ) -> None:
     """Remove the keyboard from a permission prompt and append a resolution note."""
     try:
-        current_text = msg.text or msg.caption or ""
-        updated_text = f"{current_text}\n\n{resolution_note}"
-        await msg.edit_text(
-            updated_text,
-            parse_mode="HTML",
-            reply_markup=None,
-        )
+        updated = f"{original_html}\n\n{resolution_note}"
+        await msg.edit_text(updated, parse_mode="HTML", reply_markup=None)
     except Exception as exc:  # pragma: no cover
         logger.debug("Could not edit permission message: %s", exc)
 
@@ -141,6 +137,9 @@ class ClaudeBridge:
         self._config = config
         self._db = db
         self._permission_manager = permission_manager
+        # user_id → {tool_use_id → file_path_str}; populated in _send_tool_use_block,
+        # consumed in _send_tool_result (Fix 2: dispatch after Write completes).
+        self._pending_writes: dict[int, dict[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Public interface
@@ -163,6 +162,9 @@ class ClaudeBridge:
         5. Run session-persist step.
         6. On SDK auth error: post recovery message.
         """
+        # Clear any stale pending-write entries from a previous turn.
+        self._pending_writes[user_id] = {}
+
         session_uuid = await self._db.get_active_session(user_id)
 
         options = self._build_options(user_id, session_uuid, bot, chat_id)
@@ -275,7 +277,7 @@ class ClaudeBridge:
             # ToolResultBlock appears inside a UserMessage in some SDK versions
             for content in block.content:
                 if isinstance(content, ToolResultBlock):
-                    await self._send_tool_result(content, bot, chat_id)
+                    await self._send_tool_result(content, user_id, bot, chat_id)
         elif isinstance(block, ResultMessage):
             # Extract new session UUID if the SDK emits one
             extracted = _extract_session_uuid(block)
@@ -324,34 +326,28 @@ class ClaudeBridge:
         bot: Bot,
         chat_id: int,
     ) -> None:
-        """Send a tool-use announcement and optionally track file outputs."""
+        """Announce a tool-use block and track pending Write outputs.
+
+        In bypass mode there is no can_use_tool callback, so this is the only
+        place to send the announcement.  In interactive/readonly modes the
+        can_use_tool callback (_can_use_tool) handles the announcement.
+        """
         mode = self._config.permission_mode
-        keyboard = (
-            _build_permission_keyboard(block.id)
-            if mode == "interactive"
-            else None
-        )
-        text, _ = _build_tool_announcement(block.name, block.input, keyboard)
+        if mode == "bypass":
+            text, _ = _build_tool_announcement(block.name, block.input)
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-
-        # Track Write tool for file-output forwarding (§5)
+        # Track Write tool for post-result file dispatch (Fix 2).
+        # Store path here; dispatch_file is called in _send_tool_result once the
+        # file actually exists.
         if block.name == "Write" and isinstance(block.input, dict):
             file_path_str = block.input.get("file_path") or block.input.get("path")
             if file_path_str:
-                from pathlib import Path
-                try:
-                    await dispatch_file(Path(file_path_str), bot, chat_id)
-                except Exception as exc:
-                    logger.debug("dispatch_file failed for %s: %s", file_path_str, exc)
+                self._pending_writes.setdefault(user_id, {})[block.id] = file_path_str
+        # For interactive/readonly, the can_use_tool callback handles announcement.
 
     async def _send_tool_result(
-        self, block: ToolResultBlock, bot: Bot, chat_id: int
+        self, block: ToolResultBlock, user_id: int, bot: Bot, chat_id: int
     ) -> None:
         """Send raw tool result in a <pre> block, chunked if needed."""
         content = _extract_tool_result_content(block)
@@ -370,6 +366,18 @@ class ClaudeBridge:
                 text = f"{chunk}\n<i>({idx}/{total})</i>"
             await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
+        # Dispatch any file written by a preceding Write tool now that it exists.
+        tool_use_id = getattr(block, "tool_use_id", None)
+        if tool_use_id:
+            user_writes = self._pending_writes.get(user_id, {})
+            file_path_str = user_writes.pop(tool_use_id, None)
+            if file_path_str:
+                from pathlib import Path
+                try:
+                    await dispatch_file(Path(file_path_str), bot, chat_id)
+                except Exception as exc:
+                    logger.debug("dispatch_file failed for %s: %s", file_path_str, exc)
+
     # ------------------------------------------------------------------
     # Tool permission callback
     # ------------------------------------------------------------------
@@ -386,12 +394,17 @@ class ClaudeBridge:
     ) -> dict[str, Any]:
         """The can_use_tool callback passed to the SDK.
 
+        Responsible for announcing the tool use in interactive/readonly modes
+        (bypass mode announces in _send_tool_use_block instead).
+
         Returns {"allow": bool} or {"allow": False, "message": str}.
         """
         mode = self._config.permission_mode
+        text_html, _ = _build_tool_announcement(tool_name, tool_input)
 
-        # readonly mode: auto-allow safe tools, auto-deny everything else
         if mode == "readonly":
+            # Always announce so the user sees what Claude attempted.
+            await bot.send_message(chat_id=chat_id, text=text_html, parse_mode="HTML")
             if tool_name in READONLY_TOOLS:
                 logger.debug("readonly mode: auto-allowing %s", tool_name)
                 return {"allow": True}
@@ -408,9 +421,11 @@ class ClaudeBridge:
             logger.debug(
                 "Auto-allowing %s (always-allow grant) for user %d", tool_name, user_id
             )
+            # Announce without a keyboard (parity with manually-approved tools).
+            await bot.send_message(chat_id=chat_id, text=text_html, parse_mode="HTML")
             return {"allow": True}
 
-        # interactive mode: ask via Telegram
+        # interactive mode: ask via Telegram (announcement sent inside with keyboard)
         return await self._ask_user_for_permission(
             tool_name=tool_name,
             tool_input=tool_input,
@@ -419,6 +434,7 @@ class ClaudeBridge:
             session_uuid=session_uuid,
             bot=bot,
             chat_id=chat_id,
+            text_html=text_html,
         )
 
     async def _ask_user_for_permission(
@@ -430,14 +446,18 @@ class ClaudeBridge:
         session_uuid: str | None,
         bot: Bot,
         chat_id: int,
+        text_html: str,
     ) -> dict[str, Any]:
-        """Send permission prompt, store Future, await resolution with timeout."""
+        """Send permission prompt, store Future, await resolution with timeout.
+
+        *text_html* is the pre-built announcement HTML (from _can_use_tool) so we
+        don't rebuild it here and can reuse it verbatim when editing the message.
+        """
         keyboard = _build_permission_keyboard(tool_use_id)
-        text, _ = _build_tool_announcement(tool_name, tool_input, keyboard)
 
         prompt_msg = await bot.send_message(
             chat_id=chat_id,
-            text=text,
+            text=text_html,
             parse_mode="HTML",
             reply_markup=keyboard,
         )
@@ -460,10 +480,10 @@ class ClaudeBridge:
                 future.cancel()
             # Clean up waiting_for_reason if user was in that state
             waiting_for_reason.pop(user_id, None)
-            await _edit_permission_message(prompt_msg, "\u23f1 Timed out")
+            await _edit_permission_message(prompt_msg, text_html, "\u23f1 Timed out")
         else:
             note = "\u2705 Allowed" if result.get("allow") else "\u274c Denied"
-            await _edit_permission_message(prompt_msg, note)
+            await _edit_permission_message(prompt_msg, text_html, note)
         finally:
             pending_permissions.pop((user_id, tool_use_id), None)
 
