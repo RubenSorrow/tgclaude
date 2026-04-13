@@ -1,0 +1,37 @@
+[Unit]
+Description=tgclaude Telegram-to-Claude bridge (%i)
+Documentation=https://github.com/tgclaude/tgclaude
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+
+# Load configuration from the user's config directory.
+# Populate this file from .env.example before starting the service.
+EnvironmentFile=%h/.config/tgclaude/.env
+
+# Use the installed console script from the user's pip-installed package.
+ExecStart=%h/.local/bin/tgclaude
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tgclaude
+
+# --------------------------------------------------------------------
+# Security hardening
+# --------------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+
+# Allow writes to the database directory and the Claude home (for reading
+# credentials.json and session JSONL files, which may be updated at runtime).
+ReadWritePaths=%h/.local/state/tgclaude %h/.claude
+
+[Install]
+WantedBy=multi-user.target

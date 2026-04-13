@@ -1,0 +1,557 @@
+"""Claude SDK bridge.
+
+Wraps the claude-agent-sdk in one cohesive async class that:
+- Maps a Telegram user + text message to a single SDK turn.
+- Streams each SDK content block to Telegram as it arrives.
+- Implements the interactive tool-permission loop (§6).
+- Runs the session-persist step after every completed turn (§4).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import json
+import logging
+from typing import Any
+
+from claude_agent_sdk import query, ClaudeOptions
+from claude_agent_sdk.types import (
+    TextBlock,
+    ThinkingBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+    ResultMessage,
+    AssistantMessage,
+    UserMessage,
+)
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from tgclaude.config import Config, READONLY_TOOLS
+from tgclaude.db import Database
+from tgclaude.formatter import format_text, chunk_message
+from tgclaude.media import dispatch_file
+from tgclaude.permissions import PermissionManager
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Process-global coordination state
+# ---------------------------------------------------------------------------
+
+# (telegram_user_id, tool_use_id) → asyncio.Future[dict]
+# Future resolves to {"allow": bool, "message": str | None}
+pending_permissions: dict[tuple[int, str], asyncio.Future] = {}
+
+# user_id → tool_use_id they're composing a denial reason for
+waiting_for_reason: dict[int, str] = {}
+
+# ---------------------------------------------------------------------------
+# Truncation constants (§5 ToolUseBlock display)
+# ---------------------------------------------------------------------------
+
+_TOOL_INPUT_MAX_LINES = 20
+_TOOL_INPUT_MAX_CHARS = 500
+
+
+def _truncate_tool_input(raw: Any) -> tuple[str, bool, int]:
+    """Serialise tool input to a short string for display.
+
+    Returns (truncated_text, was_truncated, total_chars).
+    """
+    try:
+        full = json.dumps(raw, indent=2, ensure_ascii=False)
+    except (TypeError, ValueError):
+        full = repr(raw)
+
+    total = len(full)
+
+    lines = full.splitlines()
+    if len(lines) > _TOOL_INPUT_MAX_LINES:
+        lines = lines[:_TOOL_INPUT_MAX_LINES]
+        truncated = "\n".join(lines)
+        return truncated, True, total
+
+    if len(full) > _TOOL_INPUT_MAX_CHARS:
+        return full[:_TOOL_INPUT_MAX_CHARS], True, total
+
+    return full, False, total
+
+
+def _build_tool_announcement(
+    tool_name: str,
+    tool_input: Any,
+    permission_keyboard: InlineKeyboardMarkup | None = None,
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Build the Telegram message text and optional keyboard for a ToolUseBlock.
+
+    Format per §5:
+        🔧 <tool_name>
+        <pre>truncated input JSON</pre>
+        (truncated, N chars total)   ← only if truncated
+    """
+    snippet, was_truncated, total_chars = _truncate_tool_input(tool_input)
+    escaped = html.escape(snippet)
+    text = f"🔧 <b>{html.escape(tool_name)}</b>\n<pre>{escaped}</pre>"
+    if was_truncated:
+        text += f"\n<i>(truncated, {total_chars} chars total)</i>"
+    return text, permission_keyboard
+
+
+def _build_permission_keyboard(tool_use_id: str) -> InlineKeyboardMarkup:
+    """Return the 4-button inline keyboard for interactive permission prompts."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes", callback_data=f"perm:yes:{tool_use_id}"),
+            InlineKeyboardButton("⭐ Always allow", callback_data=f"perm:always:{tool_use_id}"),
+        ],
+        [
+            InlineKeyboardButton("❌ No", callback_data=f"perm:no:{tool_use_id}"),
+            InlineKeyboardButton("✏️ No, and say why", callback_data=f"perm:why:{tool_use_id}"),
+        ],
+    ])
+
+
+async def _edit_permission_message(
+    msg: Message,
+    resolution_note: str,
+) -> None:
+    """Remove the keyboard from a permission prompt and append a resolution note."""
+    try:
+        current_text = msg.text or msg.caption or ""
+        updated_text = f"{current_text}\n\n{resolution_note}"
+        await msg.edit_text(
+            updated_text,
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Could not edit permission message: %s", exc)
+
+
+class ClaudeBridge:
+    """Executes a single Claude turn and streams the result to Telegram."""
+
+    def __init__(
+        self,
+        config: Config,
+        db: Database,
+        permission_manager: PermissionManager,
+    ) -> None:
+        self._config = config
+        self._db = db
+        self._permission_manager = permission_manager
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    async def run_turn(
+        self,
+        user_id: int,
+        text: str,
+        bot: Bot,
+        chat_id: int,
+    ) -> None:
+        """Execute one Claude turn and stream results to Telegram.
+
+        Per §4 and §5:
+        1. Look up active session UUID from DB.
+        2. Build ClaudeOptions with cwd=config.claude_project_cwd.
+        3. Send typing action before starting.
+        4. Iterate SDK response blocks and dispatch each.
+        5. Run session-persist step.
+        6. On SDK auth error: post recovery message.
+        """
+        session_uuid = await self._db.get_active_session(user_id)
+
+        options = self._build_options(user_id, session_uuid, bot, chat_id)
+
+        await bot.send_chat_action(chat_id=chat_id, action="typing")
+
+        new_session_uuid: str | None = session_uuid
+        sdk_succeeded = False
+        try:
+            async for block in query(
+                prompt=text,
+                options=options,
+            ):
+                await bot.send_chat_action(chat_id=chat_id, action="typing")
+                new_session_uuid = await self._dispatch_block(
+                    block=block,
+                    user_id=user_id,
+                    session_uuid=session_uuid,
+                    bot=bot,
+                    chat_id=chat_id,
+                    current_new_uuid=new_session_uuid,
+                )
+            sdk_succeeded = True
+        except Exception as exc:
+            if _is_auth_error(exc):
+                logger.warning("SDK auth error for user %d: %s", user_id, exc)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "Auth expired \u2014 SSH in and run <code>claude</code> once "
+                        "to refresh credentials, then retry."
+                    ),
+                    parse_mode="HTML",
+                )
+            else:
+                logger.exception("SDK error during turn for user %d", user_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="An unexpected error occurred. Please try again.",
+                )
+        finally:
+            # Always clear deferred flags; only persist UUID on success (§4)
+            await self._persist_session(
+                user_id, new_session_uuid if sdk_succeeded else None
+            )
+
+    # ------------------------------------------------------------------
+    # SDK options builder
+    # ------------------------------------------------------------------
+
+    def _build_options(
+        self,
+        user_id: int,
+        session_uuid: str | None,
+        bot: Bot,
+        chat_id: int,
+    ) -> ClaudeOptions:
+        """Construct ClaudeOptions for this turn."""
+        kwargs: dict[str, Any] = {
+            "cwd": str(self._config.claude_project_cwd),
+        }
+        if session_uuid:
+            kwargs["resume"] = session_uuid
+
+        mode = self._config.permission_mode
+        if mode == "bypass":
+            kwargs["permission_mode"] = "bypassPermissions"
+        elif mode in ("interactive", "readonly"):
+            async def can_use_tool(
+                tool_name: str,
+                tool_input: Any,
+                tool_use_id: str,
+            ):
+                return await self._can_use_tool(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_use_id=tool_use_id,
+                    user_id=user_id,
+                    session_uuid=session_uuid,
+                    bot=bot,
+                    chat_id=chat_id,
+                )
+            kwargs["can_use_tool"] = can_use_tool
+
+        return ClaudeOptions(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Block dispatcher
+    # ------------------------------------------------------------------
+
+    async def _dispatch_block(
+        self,
+        block: Any,
+        user_id: int,
+        session_uuid: str | None,
+        bot: Bot,
+        chat_id: int,
+        current_new_uuid: str | None,
+    ) -> str | None:
+        """Route a single SDK content block to the correct handler.
+
+        Returns the (potentially updated) session UUID.
+        """
+        if isinstance(block, AssistantMessage):
+            for content in block.content:
+                await self._handle_content_item(
+                    content, user_id, session_uuid, bot, chat_id
+                )
+        elif isinstance(block, UserMessage):
+            # ToolResultBlock appears inside a UserMessage in some SDK versions
+            for content in block.content:
+                if isinstance(content, ToolResultBlock):
+                    await self._send_tool_result(content, bot, chat_id)
+        elif isinstance(block, ResultMessage):
+            # Extract new session UUID if the SDK emits one
+            extracted = _extract_session_uuid(block)
+            if extracted:
+                return extracted
+        return current_new_uuid
+
+    async def _handle_content_item(
+        self,
+        item: Any,
+        user_id: int,
+        session_uuid: str | None,
+        bot: Bot,
+        chat_id: int,
+    ) -> None:
+        """Handle a single content item within an AssistantMessage."""
+        if isinstance(item, TextBlock):
+            await self._send_text_block(item, bot, chat_id)
+        elif isinstance(item, ThinkingBlock):
+            pass  # Hidden in v1
+        elif isinstance(item, ToolUseBlock):
+            await self._send_tool_use_block(
+                item, user_id, session_uuid, bot, chat_id
+            )
+
+    # ------------------------------------------------------------------
+    # Block senders
+    # ------------------------------------------------------------------
+
+    async def _send_text_block(self, block: TextBlock, bot: Bot, chat_id: int) -> None:
+        """Format a TextBlock through the markdown→HTML pipeline and send."""
+        formatted = format_text(block.text)
+        chunks = chunk_message(formatted)
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            text = chunk
+            if total > 1:
+                text = f"{chunk}\n<i>({idx}/{total})</i>"
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+
+    async def _send_tool_use_block(
+        self,
+        block: ToolUseBlock,
+        user_id: int,
+        session_uuid: str | None,
+        bot: Bot,
+        chat_id: int,
+    ) -> None:
+        """Send a tool-use announcement and optionally track file outputs."""
+        mode = self._config.permission_mode
+        keyboard = (
+            _build_permission_keyboard(block.id)
+            if mode == "interactive"
+            else None
+        )
+        text, _ = _build_tool_announcement(block.name, block.input, keyboard)
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+        # Track Write tool for file-output forwarding (§5)
+        if block.name == "Write" and isinstance(block.input, dict):
+            file_path_str = block.input.get("file_path") or block.input.get("path")
+            if file_path_str:
+                from pathlib import Path
+                try:
+                    await dispatch_file(Path(file_path_str), bot, chat_id)
+                except Exception as exc:
+                    logger.debug("dispatch_file failed for %s: %s", file_path_str, exc)
+
+    async def _send_tool_result(
+        self, block: ToolResultBlock, bot: Bot, chat_id: int
+    ) -> None:
+        """Send raw tool result in a <pre> block, chunked if needed."""
+        content = _extract_tool_result_content(block)
+        if not content:
+            return
+
+        escaped = html.escape(content)
+        full_text = f"<pre>{escaped}</pre>"
+
+        # Chunk without running through format_text (raw terminal output)
+        chunks = chunk_message(full_text)
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            text = chunk
+            if total > 1:
+                text = f"{chunk}\n<i>({idx}/{total})</i>"
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+
+    # ------------------------------------------------------------------
+    # Tool permission callback
+    # ------------------------------------------------------------------
+
+    async def _can_use_tool(
+        self,
+        tool_name: str,
+        tool_input: Any,
+        tool_use_id: str,
+        user_id: int,
+        session_uuid: str | None,
+        bot: Bot,
+        chat_id: int,
+    ) -> dict[str, Any]:
+        """The can_use_tool callback passed to the SDK.
+
+        Returns {"allow": bool} or {"allow": False, "message": str}.
+        """
+        mode = self._config.permission_mode
+
+        # readonly mode: auto-allow safe tools, auto-deny everything else
+        if mode == "readonly":
+            if tool_name in READONLY_TOOLS:
+                logger.debug("readonly mode: auto-allowing %s", tool_name)
+                return {"allow": True}
+            logger.info("readonly mode: denying %s for user %d", tool_name, user_id)
+            return {
+                "allow": False,
+                "message": "this bot is in readonly mode \u2014 tool rejected.",
+            }
+
+        # interactive mode: check existing grant first
+        if session_uuid and await self._permission_manager.has_grant(
+            user_id, session_uuid, tool_name
+        ):
+            logger.debug(
+                "Auto-allowing %s (always-allow grant) for user %d", tool_name, user_id
+            )
+            return {"allow": True}
+
+        # interactive mode: ask via Telegram
+        return await self._ask_user_for_permission(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_use_id=tool_use_id,
+            user_id=user_id,
+            session_uuid=session_uuid,
+            bot=bot,
+            chat_id=chat_id,
+        )
+
+    async def _ask_user_for_permission(
+        self,
+        tool_name: str,
+        tool_input: Any,
+        tool_use_id: str,
+        user_id: int,
+        session_uuid: str | None,
+        bot: Bot,
+        chat_id: int,
+    ) -> dict[str, Any]:
+        """Send permission prompt, store Future, await resolution with timeout."""
+        keyboard = _build_permission_keyboard(tool_use_id)
+        text, _ = _build_tool_announcement(tool_name, tool_input, keyboard)
+
+        prompt_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        pending_permissions[(user_id, tool_use_id)] = future
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(future),
+                timeout=self._config.permission_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            result = {
+                "allow": False,
+                "message": "permission prompt timed out \u2014 no response from Telegram.",
+            }
+            if not future.done():
+                future.cancel()
+            # Clean up waiting_for_reason if user was in that state
+            waiting_for_reason.pop(user_id, None)
+            await _edit_permission_message(prompt_msg, "\u23f1 Timed out")
+        else:
+            note = "\u2705 Allowed" if result.get("allow") else "\u274c Denied"
+            await _edit_permission_message(prompt_msg, note)
+        finally:
+            pending_permissions.pop((user_id, tool_use_id), None)
+
+        # Persist "always allow" grant if the user chose it
+        if result.get("always") and session_uuid:
+            await self._permission_manager.add_grant(user_id, session_uuid, tool_name)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Session persist step (§4)
+    # ------------------------------------------------------------------
+
+    async def _persist_session(
+        self,
+        user_id: int,
+        new_session_uuid: str | None,
+    ) -> None:
+        """Run the session-persist step: check deferred flags and write UUID."""
+        # Import here to avoid circular import; these dicts live in messages.py
+        from tgclaude.handlers.messages import detach_after_turn, reattach_after_turn
+
+        try:
+            detach = detach_after_turn.pop(user_id, False)
+            reattach_uuid = reattach_after_turn.pop(user_id, None)
+
+            if detach:
+                await self._db.clear_active_session(user_id)
+                logger.debug("Detached user %d after turn (deferred flag)", user_id)
+            elif reattach_uuid:
+                await self._db.set_active_session(user_id, reattach_uuid)
+                logger.debug(
+                    "Reattached user %d to %s after turn (deferred flag)",
+                    user_id,
+                    reattach_uuid,
+                )
+            elif new_session_uuid:
+                await self._db.set_active_session(user_id, new_session_uuid)
+                logger.debug(
+                    "Persisted session %s for user %d", new_session_uuid, user_id
+                )
+        except Exception as exc:
+            logger.exception(
+                "Failed to persist session for user %d: %s", user_id, exc
+            )
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Return True if the exception looks like an SDK authentication failure."""
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return "auth" in name or "401" in msg or "unauthorized" in msg or "credential" in msg
+
+
+def _extract_session_uuid(result: ResultMessage) -> str | None:
+    """Extract the session UUID from a ResultMessage if present."""
+    try:
+        # The SDK may expose session_id on the result
+        uuid = getattr(result, "session_id", None)
+        if uuid:
+            return str(uuid)
+    except Exception:
+        pass
+    return None
+
+
+def _extract_tool_result_content(block: ToolResultBlock) -> str:
+    """Extract the plain text content from a ToolResultBlock."""
+    content = getattr(block, "content", None)
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(item.get("text", ""))
+            else:
+                text = getattr(item, "text", None)
+                if text:
+                    parts.append(str(text))
+        return "\n".join(parts)
+    return str(content)
