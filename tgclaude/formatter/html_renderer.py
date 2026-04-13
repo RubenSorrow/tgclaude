@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -10,6 +11,15 @@ from .ascii_detect import is_ascii_art
 
 # Horizontal rule replacement (12 heavy box-drawing dashes)
 HR_REPLACEMENT = "━━━━━━━━━━━━\n"
+
+# Strips inline markdown formatting markers from plain-text contexts (e.g. table
+# cells inside <pre> blocks) where HTML tags cannot be used for styling.
+_MD_INLINE_RE = re.compile(r"[*_~`]")
+
+
+def _strip_md_inline(text: str) -> str:
+    """Remove markdown inline formatting characters from *text*."""
+    return _MD_INLINE_RE.sub("", text)
 
 # Maps diagram language tags to their canonical render URL hint.
 # Stable policy: adding a new diagram tool = adding one entry here (OCP).
@@ -360,8 +370,11 @@ def _render_table_tokens(tokens: list[Token]) -> str:
                 pass
             case "inline":
                 if in_tr:
-                    # Render the cell as plain text (strip tags for width calc)
-                    current_row.append(tok.content)
+                    # Render the cell as plain text (strip tags for width calc).
+                    # tok.content is raw markdown source, so strip inline
+                    # formatting markers before storing — tables live inside
+                    # <pre> blocks where HTML styling is not available.
+                    current_row.append(_strip_md_inline(tok.content))
         i += 1
 
     return render_table(header_cells, body_rows)

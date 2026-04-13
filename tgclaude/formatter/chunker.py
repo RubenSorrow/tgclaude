@@ -78,7 +78,10 @@ def _find_pre_end(html: str, start: int) -> int:
             if depth <= 0:
                 # Return position just after the '>'
                 close_start = pos + m.start()
-                close_end = html.index(">", close_start) + 1
+                gt_pos = html.find(">", close_start)
+                if gt_pos == -1:
+                    return -1
+                close_end = gt_pos + 1
                 return close_end
         else:  # opening
             depth += 1
