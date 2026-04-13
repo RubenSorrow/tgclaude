@@ -200,11 +200,13 @@ async def alerts_poller(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not messages_to_send:
         return
 
+    messages_to_send[0] += "\n\n<i>Tip: /alerts off to silence · /alerts thresholds 80,95 to tune</i>"
+
     # 5. Broadcast to all allowed users
     for user_id in config.allowed_user_ids:
         for msg in messages_to_send:
             try:
-                await context.bot.send_message(chat_id=user_id, text=msg)
+                await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="HTML")
             except TelegramError as exc:
                 log.debug(
                     "alerts_poller: could not send to user_id=%d (likely never started bot): %s",

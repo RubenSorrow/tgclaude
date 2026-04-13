@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import httpx
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,6 +27,7 @@ from tgclaude.config import load_config
 from tgclaude.db import init_db
 from tgclaude.handlers.alerts import alerts_command, alerts_poller
 from tgclaude.handlers.commands import (
+    help_command,
     list_command,
     new_command,
     permission_callback,
@@ -145,6 +147,27 @@ def _install_redaction_filter(config, access_token: str) -> logging.Filter:
 
 
 # ---------------------------------------------------------------------------
+# Bot commands (shown in Telegram's suggestion menu)
+# ---------------------------------------------------------------------------
+
+_BOT_COMMANDS = [
+    BotCommand("start", "Session picker"),
+    BotCommand("list", "Re-show the session picker"),
+    BotCommand("new", "Start a fresh session"),
+    BotCommand("usage", "Show Max-plan usage"),
+    BotCommand("alerts", "Manage usage alerts"),
+    BotCommand("whoami", "Show user ID and active session"),
+    BotCommand("help", "Show available commands"),
+]
+
+
+async def _post_init(application: Application) -> None:
+    """Initialise shared resources and register bot commands."""
+    await _startup(application)
+    await application.bot.set_my_commands(_BOT_COMMANDS)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -182,7 +205,7 @@ def main() -> None:
     app = (
         Application.builder()
         .token(config.bot_token)
-        .post_init(_startup)
+        .post_init(_post_init)
         .post_shutdown(_shutdown)
         .build()
     )
@@ -199,6 +222,7 @@ def main() -> None:
     app.add_handler(CommandHandler("whoami", whoami_command))
     app.add_handler(CommandHandler("usage", usage_command))
     app.add_handler(CommandHandler("alerts", alerts_command))
+    app.add_handler(CommandHandler("help", help_command))
 
     # Free-text message handler
     app.add_handler(

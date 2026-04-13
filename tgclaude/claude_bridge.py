@@ -122,6 +122,8 @@ def _build_tool_announcement(
 async def _as_user_stream(text: str):
     """Wrap a plain string as the AsyncIterable[dict] the SDK expects when can_use_tool is set."""
     yield {"type": "user", "message": {"role": "user", "content": text}}
+    # Keep the stream open until the SDK cancels us on turn completion.
+    await asyncio.Event().wait()
 
 
 def _build_permission_keyboard(tool_use_id: str) -> InlineKeyboardMarkup:
@@ -308,6 +310,7 @@ class ClaudeBridge:
                     chat_id=chat_id,
                 )
             kwargs["can_use_tool"] = can_use_tool
+            kwargs["permission_mode"] = "default"
 
         return ClaudeAgentOptions(**kwargs)
 

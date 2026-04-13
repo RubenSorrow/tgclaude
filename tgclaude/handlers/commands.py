@@ -180,6 +180,32 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ---------------------------------------------------------------------------
+# /help
+# ---------------------------------------------------------------------------
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show a list of available commands."""
+    if update.message is None or update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+    if user_id not in config.allowed_user_ids:
+        return
+
+    await update.message.reply_text(
+        "<b>/start</b> — Session picker (welcome on first run)\n"
+        "<b>/list</b> — Re-show the session picker\n"
+        "<b>/new</b> — Detach and start a fresh session\n"
+        "<b>/usage</b> — Show Max-plan usage\n"
+        "<b>/alerts</b> — on|off, thresholds N,N,N, reset\n"
+        "<b>/whoami</b> — Show your user ID and active session\n"
+        "<b>/help</b> — This message",
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Picker callback
 # ---------------------------------------------------------------------------
 
