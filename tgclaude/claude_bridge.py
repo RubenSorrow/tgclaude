@@ -10,11 +10,12 @@ Wraps the claude-agent-sdk in one cohesive async class that:
 from __future__ import annotations
 
 import asyncio
+import collections
 import html
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterable
 
 import aiosqlite
 
@@ -27,6 +28,7 @@ from claude_agent_sdk.types import (
     ResultMessage,
     AssistantMessage,
     UserMessage,
+    SystemMessage,
     ToolPermissionContext,
     PermissionResultAllow,
     PermissionResultDeny,
@@ -117,16 +119,21 @@ def _build_tool_announcement(
     return text, permission_keyboard
 
 
+async def _as_user_stream(text: str):
+    """Wrap a plain string as the AsyncIterable[dict] the SDK expects when can_use_tool is set."""
+    yield {"type": "user", "message": {"role": "user", "content": text}}
+
+
 def _build_permission_keyboard(tool_use_id: str) -> InlineKeyboardMarkup:
     """Return the 4-button inline keyboard for interactive permission prompts."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Yes", callback_data=f"perm:yes:{tool_use_id}"),
-            InlineKeyboardButton("⭐ Always allow", callback_data=f"perm:always:{tool_use_id}"),
+            InlineKeyboardButton("\u2705 Yes", callback_data=f"perm:yes:{tool_use_id}"),
+            InlineKeyboardButton("\u2b50 Always allow", callback_data=f"perm:always:{tool_use_id}"),
         ],
         [
-            InlineKeyboardButton("❌ No", callback_data=f"perm:no:{tool_use_id}"),
-            InlineKeyboardButton("✏️ No, and say why", callback_data=f"perm:why:{tool_use_id}"),
+            InlineKeyboardButton("\u274c No", callback_data=f"perm:no:{tool_use_id}"),
+            InlineKeyboardButton("\u270f\ufe0f No, and say why", callback_data=f"perm:why:{tool_use_id}"),
         ],
     ])
 
@@ -159,6 +166,10 @@ class ClaudeBridge:
         # user_id → {tool_use_id → file_path_str}; populated in _send_tool_use_block,
         # consumed in _send_tool_result (Fix 2: dispatch after Write completes).
         self._pending_writes: dict[int, dict[str, str]] = {}
+        # user_id → FIFO of block.id values for ToolUseBlocks seen during the current
+        # turn.  Populated in _handle_content_item; consumed by the can_use_tool
+        # closure in _build_options so each permission prompt uses the correct ID.
+        self._tool_use_id_queues: dict[int, collections.deque[str]] = {}
 
     # ------------------------------------------------------------------
     # Public interface
@@ -181,8 +192,9 @@ class ClaudeBridge:
         5. Run session-persist step.
         6. On SDK auth error: post recovery message.
         """
-        # Clear any stale pending-write entries from a previous turn.
+        # Clear any stale state from a previous turn.
         self._pending_writes[user_id] = {}
+        self._tool_use_id_queues[user_id] = collections.deque()
 
         session_uuid = await self._db.get_active_session(user_id)
 
@@ -209,8 +221,11 @@ class ClaudeBridge:
         new_session_uuid: str | None = session_uuid
         sdk_succeeded = False
         try:
+            prompt: str | AsyncIterable = text
+            if self._config.permission_mode != "bypass":
+                prompt = _as_user_stream(text)
             async for block in query(
-                prompt=text,
+                prompt=prompt,
                 options=options,
             ):
                 await bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -281,7 +296,8 @@ class ClaudeBridge:
                 tool_input: Any,
                 context: ToolPermissionContext,
             ):
-                tool_use_id = getattr(context, "tool_use_id", None) or getattr(context, "id", "") or ""
+                queue = self._tool_use_id_queues.get(user_id, collections.deque())
+                tool_use_id = queue.popleft() if queue else ""
                 return await self._can_use_tool(
                     tool_name=tool_name,
                     tool_input=tool_input,
@@ -328,6 +344,8 @@ class ClaudeBridge:
             extracted = _extract_session_uuid(block)
             if extracted:
                 return extracted
+        elif isinstance(block, SystemMessage):
+            pass  # System messages are not displayed to the user
         return current_new_uuid
 
     async def _handle_content_item(
@@ -344,6 +362,7 @@ class ClaudeBridge:
         elif isinstance(item, ThinkingBlock):
             pass  # Hidden in v1
         elif isinstance(item, ToolUseBlock):
+            self._tool_use_id_queues.setdefault(user_id, collections.deque()).append(item.id)
             await self._send_tool_use_block(
                 item, user_id, session_uuid, bot, chat_id
             )
@@ -454,10 +473,9 @@ class ClaudeBridge:
             await bot.send_message(chat_id=chat_id, text=text_html, parse_mode="HTML")
             if tool_name in READONLY_TOOLS:
                 logger.debug("readonly mode: auto-allowing %s", tool_name)
-                return PermissionResultAllow(behavior="allow")
+                return PermissionResultAllow()
             logger.info("readonly mode: denying %s for user %d", tool_name, user_id)
             return PermissionResultDeny(
-                behavior="deny",
                 message="this bot is in readonly mode \u2014 tool rejected.",
             )
 
@@ -470,7 +488,7 @@ class ClaudeBridge:
             )
             # Announce without a keyboard (parity with manually-approved tools).
             await bot.send_message(chat_id=chat_id, text=text_html, parse_mode="HTML")
-            return PermissionResultAllow(behavior="allow")
+            return PermissionResultAllow()
 
         # interactive mode: ask via Telegram; result is internal dict protocol
         result = await self._ask_user_for_permission(
@@ -486,8 +504,8 @@ class ClaudeBridge:
             await self._permission_manager.add_grant(user_id, session_uuid, tool_name)
 
         if result.get("allow"):
-            return PermissionResultAllow(behavior="allow")
-        return PermissionResultDeny(behavior="deny", message=result.get("message", ""))
+            return PermissionResultAllow()
+        return PermissionResultDeny(message=result.get("message", ""))
 
     async def _ask_user_for_permission(
         self,

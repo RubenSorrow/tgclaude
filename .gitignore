@@ -22,6 +22,9 @@ env/
 # Logs
 *.log
 
+# Codegraph
+.codegraph/
+
 # OS
 .DS_Store
 Thumbs.db
