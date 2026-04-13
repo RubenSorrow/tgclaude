@@ -26,6 +26,9 @@ _user_locks: dict[int, asyncio.Lock] = {}
 # Per-user bounded message queues (max 5)
 _user_queues: dict[int, asyncio.Queue] = {}
 
+# Cancellation flags: set by _purge_queue when /new fires mid-drain
+_drain_cancelled: set[int] = set()
+
 # Deferred session flags — set by /new or picker during an in-flight turn
 detach_after_turn: dict[int, bool] = {}
 reattach_after_turn: dict[int, str] = {}  # user_id → new session UUID
@@ -67,19 +70,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         key = (user_id, tool_use_id)
         future = pending_permissions.get(key)
         if future and not future.done():
-            # Only text messages become the denial reason (§5)
-            if update.message.text:
-                reason = update.message.text.strip()
-                future.set_result({"allow": False, "message": reason})
-                await update.message.reply_text(
-                    "Denial reason sent to Claude."
-                )
-            else:
-                # Non-text in WAITING_FOR_REASON: reject, keep state
-                waiting_for_reason[user_id] = tool_use_id
-                await update.message.reply_text(
-                    "I only understand text messages."
-                )
+            reason = update.message.text.strip()
+            future.set_result({"allow": False, "message": reason})
+            await update.message.reply_text("Denial reason sent to Claude.")
         return
 
     # 3. Non-text messages
@@ -123,6 +116,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         bridge = context.bot_data["claude_bridge"]
         bot = context.bot
 
+        # Clear any stale cancellation from a previous /new before starting a
+        # fresh drain so it does not spuriously abort the new turn.
+        _drain_cancelled.discard(user_id)
+
         # Process the immediate message
         await bridge.run_turn(
             user_id=user_id,
@@ -141,14 +138,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def unsupported_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reject non-text, non-command messages with an explanatory reply."""
+    """Reject non-text, non-command messages with an explanatory reply.
+
+    When the user is in WAITING_FOR_REASON, the rejection message acknowledges
+    that state so the user knows to send text instead.
+    """
     if update.effective_user is None or update.message is None:
         return
     user_id = update.effective_user.id
     config = context.bot_data["config"]
     if user_id not in config.allowed_user_ids:
         return  # silent drop per §10
-    await update.message.reply_text("I only understand text messages.")
+    from tgclaude.claude_bridge import waiting_for_reason
+    if user_id in waiting_for_reason:
+        await update.message.reply_text(
+            "Please send a text message explaining why Claude should not use this tool."
+        )
+    else:
+        await update.message.reply_text("I only understand text messages.")
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +170,11 @@ async def _drain_queue(
     bot,
     queue: asyncio.Queue,
 ) -> None:
-    """Process all queued messages for user_id, sequentially, while lock is held."""
+    """Process all queued messages for user_id, sequentially, while lock is held.
+
+    Checks _drain_cancelled after every turn so that a concurrent /new command
+    can abort the drain loop without waiting for all remaining turns to finish.
+    """
     while not queue.empty():
         try:
             queued_text: str = queue.get_nowait()
@@ -177,3 +188,8 @@ async def _drain_queue(
             bot=bot,
             chat_id=chat_id,
         )
+
+        if user_id in _drain_cancelled:
+            _drain_cancelled.discard(user_id)
+            logger.debug("Drain cancelled for user %d after /new", user_id)
+            break

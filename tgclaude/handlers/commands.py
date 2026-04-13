@@ -429,18 +429,22 @@ def _relative_time(mtime: datetime, now: datetime) -> str:
 
 
 def _purge_queue(user_id: int) -> None:
-    """Drain all pending messages from the user's queue."""
-    from tgclaude.handlers.messages import _user_queues
+    """Drain all pending messages from the user's queue and cancel any active drain.
+
+    Sets _drain_cancelled so that an in-progress _drain_queue loop aborts after
+    its current run_turn completes rather than processing stale queued messages.
+    """
+    from tgclaude.handlers.messages import _user_queues, _drain_cancelled
 
     queue = _user_queues.get(user_id)
-    if queue is None:
-        return
-    while not queue.empty():
-        try:
-            queue.get_nowait()
-        except Exception:
-            break
-    logger.debug("Purged message queue for user %d", user_id)
+    if queue:
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+            except Exception:
+                break
+    _drain_cancelled.add(user_id)
+    logger.debug("Purged and cancelled drain for user %d", user_id)
 
 
 def _cancel_waiting_for_reason(user_id: int) -> None:
