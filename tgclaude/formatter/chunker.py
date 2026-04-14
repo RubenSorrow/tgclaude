@@ -176,15 +176,17 @@ def _collect_chunks(html: str) -> list[str]:  # noqa: C901
                         continue
                     else:
                         # Content up to </pre> is too long — split at a line boundary.
-                        # reopen_str already contains the opening <pre> tag.
-                        budget = TARGET_LENGTH - len(reopen_str) - len("</pre>")
-                        split_pos = pre_content.rfind("\n", 0, budget)
+                        # reopen_str already contains the opening <pre> (and any nested)
+                        # tags; derive close overhead from the same tag_stack.
+                        close_overhead_str = _close_tags(tag_stack)  # e.g. "</code></pre>"
+                        budget = TARGET_LENGTH - len(reopen_str) - len(close_overhead_str)
+                        split_pos = pre_content.rfind("\n", 0, max(budget, 0))
                         if split_pos <= 0:
-                            split_pos = budget
-                        chunks.append(reopen_str + pre_content[:split_pos + 1] + "</pre>")
-                        # Remainder: the unsent part of pre_content (sans closing </pre>)
-                        # plus the rest after the original </pre>. The <pre> tag stays on
-                        # tag_stack so the next iteration re-opens it via reopen_str.
+                            split_pos = max(budget, 0)
+                        chunks.append(reopen_str + pre_content[:split_pos + 1] + close_overhead_str)
+                        # Remainder: the unsent part of pre_content (sans closing tags)
+                        # plus the rest after the original </pre>. The tag_stack keeps
+                        # its entries so the next iteration re-opens them via reopen_str.
                         remainder = pre_content[split_pos + 1:]
                         # tag_stack keeps <pre> on it so reopen_str adds <pre> next iteration
                         continue
@@ -218,15 +220,26 @@ def _collect_chunks(html: str) -> list[str]:  # noqa: C901
                         remainder = content_slice[len(pre_block):]
                     else:
                         # Pre block too long — split inside it at a line boundary.
-                        inner_start = pre_block.index(">") + 1
-                        open_tag = pre_block[:inner_start]
-                        inner = pre_block[inner_start:]
-                        budget = TARGET_LENGTH - len(reopen_str) - len(open_tag) - len("</pre>")
-                        split_pos = inner.rfind("\n", 0, budget)
+                        # Scan all contiguous opening tags at the head of pre_block
+                        # to handle e.g. <pre><code class="language-py">.
+                        pos = 0
+                        while pos < len(pre_block):
+                            m = re.match(r"<[^/][^>]*>", pre_block[pos:])
+                            if m:
+                                pos += m.end()
+                            else:
+                                break
+                        inner_start = pos
+                        open_tag = pre_block[:inner_start]   # e.g. "<pre><code class=\"language-py\">"
+                        inner = pre_block[inner_start:]      # plain text content + closing tags
+                        open_tags_in_open = _parse_open_tags_in_slice(open_tag)
+                        close_overhead_str = _close_tags(open_tags_in_open)  # e.g. "</code></pre>"
+                        budget = TARGET_LENGTH - len(reopen_str) - len(open_tag) - len(close_overhead_str)
+                        split_pos = inner.rfind("\n", 0, max(budget, 0))
                         if split_pos <= 0:
-                            split_pos = budget  # hard split if no newline
-                        chunks.append(reopen_str + open_tag + inner[:split_pos + 1] + "</pre>")
-                        remainder = "<pre>" + inner[split_pos + 1:] + content_slice[len(pre_block):]
+                            split_pos = max(budget, 0)
+                        chunks.append(reopen_str + open_tag + inner[:split_pos + 1] + close_overhead_str)
+                        remainder = open_tag + inner[split_pos + 1:] + content_slice[len(pre_block):]
                         tag_stack = []
                 continue
 

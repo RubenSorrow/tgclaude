@@ -432,3 +432,18 @@ def test_oversized_pre_carried_over_is_split_within_limit() -> None:
         assert len(chunk) <= TARGET_LENGTH, (
             f"Chunk {i} exceeds TARGET_LENGTH: {len(chunk)} chars"
         )
+
+
+def test_oversized_pre_code_block_code_tag_balanced() -> None:
+    """An oversized <pre><code class="..."> block must produce chunks each within
+    TARGET_LENGTH, and <code> tags must be balanced within every chunk."""
+    inner = "\n".join("x" * 80 for _ in range(60))
+    pre_block = f'<pre><code class="language-py">{inner}</code></pre>'
+    chunks = chunk_message(pre_block)
+    for i, chunk in enumerate(chunks):
+        assert len(chunk) <= TARGET_LENGTH, (
+            f"Chunk {i} exceeds TARGET_LENGTH: {len(chunk)} chars"
+        )
+        assert chunk.count("<code") == chunk.count("</code>"), (
+            f"Chunk {i}: unbalanced <code> tags"
+        )
