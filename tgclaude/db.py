@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS permission_grants (
 CREATE TABLE IF NOT EXISTS alert_state (
   bucket          TEXT,
   threshold       INTEGER,
-  last_fired_for  TIMESTAMP,
+  last_fired_for  TEXT,
   PRIMARY KEY (bucket, threshold)
 );
 

@@ -257,11 +257,11 @@ async def picker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if turn_in_flight:
             detach_after_turn[user_id] = True
             reattach_after_turn.pop(user_id, None)
-            reply_text = "Will start a new conversation after the current turn finishes."
+            reply_text = "Starting a new conversation after Claude finishes the current turn."
         else:
             detach_after_turn.pop(user_id, None)
             reattach_after_turn.pop(user_id, None)
-            reply_text = "Ready for a new conversation. Send a message to start."
+            reply_text = "Session cleared. Send a message to start a new conversation."
     else:
         new_uuid = payload
         existing_user = await db.get_user_for_session(new_uuid)

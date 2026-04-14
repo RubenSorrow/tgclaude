@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 READONLY_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob", "WebFetch"})
 
 _VALID_PERMISSION_MODES = frozenset({"interactive", "bypass", "readonly"})
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 _BOT_TOKEN_RE = re.compile(r'^\d{1,20}:[A-Za-z0-9_-]{30,60}$')
 
@@ -60,7 +61,7 @@ def load_config() -> Config:
     permission_mode = _parse_permission_mode()
     display_tz = _parse_display_tz()
     permission_timeout_s = _parse_positive_int("PERMISSION_TIMEOUT_S", default=600)
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = _parse_log_level(os.getenv("LOG_LEVEL", "INFO"))
 
     return Config(
         bot_token=bot_token,
@@ -185,6 +186,13 @@ def _parse_permission_mode() -> str:
             f"Must be one of: {', '.join(sorted(_VALID_PERMISSION_MODES))}."
         )
     return raw
+
+
+def _parse_log_level(raw: str) -> str:
+    val = raw.upper()
+    if val not in _VALID_LOG_LEVELS:
+        _die(f"LOG_LEVEL must be one of {', '.join(sorted(_VALID_LOG_LEVELS))}; got {raw!r}")
+    return val
 
 
 def _parse_display_tz() -> str | None:
