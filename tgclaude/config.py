@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class Config:
     allowed_user_ids: frozenset[int]
     claude_home: Path
     claude_project_cwd: Path
+    claude_binary: Path | None    # path to the system claude CLI; None = SDK bundled fallback
     database_path: Path
     alert_thresholds: list[int]
     permission_mode: str          # 'interactive' | 'bypass' | 'readonly'
@@ -57,6 +59,7 @@ def load_config() -> Config:
     allowed_user_ids = _parse_allowed_user_ids()
     claude_home = _parse_path("CLAUDE_HOME", default="~/.claude")
     claude_project_cwd = _parse_path("CLAUDE_PROJECT_CWD", default="~")
+    claude_binary = _parse_claude_binary()
     database_path = _parse_database_path()
     alert_thresholds = _parse_alert_thresholds()
     permission_mode = _parse_permission_mode()
@@ -70,6 +73,7 @@ def load_config() -> Config:
         allowed_user_ids=allowed_user_ids,
         claude_home=claude_home,
         claude_project_cwd=claude_project_cwd,
+        claude_binary=claude_binary,
         database_path=database_path,
         alert_thresholds=alert_thresholds,
         permission_mode=permission_mode,
@@ -152,6 +156,20 @@ def _parse_database_path() -> Path:
             "Check filesystem permissions."
         )
     return path
+
+
+def _parse_claude_binary() -> Path | None:
+    raw = os.getenv("CLAUDE_BINARY", "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if not p.is_file():
+            _die(f"CLAUDE_BINARY={raw!r} does not point to an existing file.")
+        return p
+    # Auto-detect from PATH
+    found = shutil.which("claude")
+    if found:
+        return Path(found)
+    return None
 
 
 def _parse_alert_thresholds() -> list[int]:

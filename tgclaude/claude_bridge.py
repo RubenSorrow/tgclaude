@@ -297,6 +297,8 @@ class ClaudeBridge:
         kwargs: dict[str, Any] = {
             "cwd": str(self._config.claude_project_cwd),
         }
+        if self._config.claude_binary:
+            kwargs["cli_path"] = str(self._config.claude_binary)
         if session_uuid:
             kwargs["resume"] = session_uuid
 
