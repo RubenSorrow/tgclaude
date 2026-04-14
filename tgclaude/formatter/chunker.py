@@ -169,11 +169,25 @@ def _collect_chunks(html: str) -> list[str]:  # noqa: C901
                 if close_m:
                     pre_content = content_slice[: close_m.end()]
                     chunk_text = reopen_str + pre_content
-                    chunks.append(chunk_text)
-                    remainder = content_slice[close_m.end():]
-                    # Update tag stack: pre is now closed.
-                    tag_stack = _parse_open_tags_in_slice(chunk_text)
-                    continue
+                    if len(chunk_text) <= TARGET_LENGTH:
+                        chunks.append(chunk_text)
+                        remainder = content_slice[close_m.end():]
+                        tag_stack = _parse_open_tags_in_slice(chunk_text)
+                        continue
+                    else:
+                        # Content up to </pre> is too long — split at a line boundary.
+                        # reopen_str already contains the opening <pre> tag.
+                        budget = TARGET_LENGTH - len(reopen_str) - len("</pre>")
+                        split_pos = pre_content.rfind("\n", 0, budget)
+                        if split_pos <= 0:
+                            split_pos = budget
+                        chunks.append(reopen_str + pre_content[:split_pos + 1] + "</pre>")
+                        # Remainder: the unsent part of pre_content (sans closing </pre>)
+                        # plus the rest after the original </pre>. The <pre> tag stays on
+                        # tag_stack so the next iteration re-opens it via reopen_str.
+                        remainder = pre_content[split_pos + 1:]
+                        # tag_stack keeps <pre> on it so reopen_str adds <pre> next iteration
+                        continue
                 else:
                     # No closing </pre> found — emit all as oversized.
                     chunks.append(reopen_str + content_slice)
@@ -196,10 +210,24 @@ def _collect_chunks(html: str) -> list[str]:  # noqa: C901
                     tag_stack = _parse_open_tags_in_slice(reopen_str + chunk_text)
                     remainder = new_remainder + content_slice[len(before_pre):]
                 else:
-                    # <pre> is at head — emit entire pre block as one chunk.
-                    chunks.append(reopen_str + pre_block)
-                    tag_stack = []  # <pre> is self-contained
-                    remainder = content_slice[len(pre_block):]
+                    # <pre> is at head.
+                    full_chunk = reopen_str + pre_block
+                    if len(full_chunk) <= TARGET_LENGTH:
+                        chunks.append(full_chunk)
+                        tag_stack = []
+                        remainder = content_slice[len(pre_block):]
+                    else:
+                        # Pre block too long — split inside it at a line boundary.
+                        inner_start = pre_block.index(">") + 1
+                        open_tag = pre_block[:inner_start]
+                        inner = pre_block[inner_start:]
+                        budget = TARGET_LENGTH - len(reopen_str) - len(open_tag) - len("</pre>")
+                        split_pos = inner.rfind("\n", 0, budget)
+                        if split_pos <= 0:
+                            split_pos = budget  # hard split if no newline
+                        chunks.append(reopen_str + open_tag + inner[:split_pos + 1] + "</pre>")
+                        remainder = "<pre>" + inner[split_pos + 1:] + content_slice[len(pre_block):]
+                        tag_stack = []
                 continue
 
         # Normal split

@@ -99,14 +99,14 @@ def test_nested_tags_balanced() -> None:
 # ── <pre> blocks never split ──────────────────────────────────────────────────
 
 def test_pre_block_not_split() -> None:
-    """A <pre> block must never be broken across chunks, even if oversized."""
-    # A <pre> block alone larger than TARGET_LENGTH.
-    code = "x" * (TARGET_LENGTH + 500)
+    """A <pre> block within TARGET_LENGTH must not be split across chunks."""
+    # A <pre> block small enough to fit in one chunk.
+    code = "x" * 100
     pre_block = f"<pre><code>{code}</code></pre>"
+    assert len(pre_block) <= TARGET_LENGTH
     chunks = chunk_message(pre_block)
-    # The pre block should be in one chunk (possibly oversized).
-    pre_in_chunks = [c for c in chunks if "<pre>" in c]
-    assert len(pre_in_chunks) == 1, "pre block was split across multiple chunks"
+    assert len(chunks) == 1, "Small pre block must stay in a single chunk"
+    assert "<pre>" in chunks[0] and "</pre>" in chunks[0]
 
 
 def test_pre_block_intact_in_chunk() -> None:
@@ -398,3 +398,37 @@ def test_chunks_reconstruct_plain_text() -> None:
 
     chunks = chunk_message(msg)
     assert "".join(chunks) == msg
+
+
+def test_oversized_pre_at_head_is_split_within_limit() -> None:
+    """A <pre> block longer than TARGET_LENGTH at the head of the message must be
+    split into chunks each within TARGET_LENGTH, not emitted as one oversized chunk.
+    """
+    # Build a <pre> block with content well over the limit.
+    inner = "\n".join("x" * 80 for _ in range(60))  # 60 lines × 81 chars ≈ 4860 chars
+    pre_block = f"<pre><code>{inner}</code></pre>"
+    assert len(pre_block) > TARGET_LENGTH
+
+    chunks = chunk_message(pre_block)
+    assert len(chunks) > 1, "Oversized pre block must be split into multiple chunks"
+    for i, chunk in enumerate(chunks):
+        assert len(chunk) <= TARGET_LENGTH, (
+            f"Chunk {i} exceeds TARGET_LENGTH: {len(chunk)} chars"
+        )
+
+
+def test_oversized_pre_carried_over_is_split_within_limit() -> None:
+    """A <pre> block that was opened in a previous chunk (carried over on the tag
+    stack) must also be split rather than emitted as one oversized chunk.
+    """
+    # Preamble forces a split before the <pre>; then the <pre> itself is oversized.
+    preamble = "intro " * 700  # ~4200 chars, forces initial split
+    inner = "\n".join("y" * 80 for _ in range(60))  # ≈ 4860 chars
+    pre_block = f"<pre><code>{inner}</code></pre>"
+    msg = preamble + pre_block
+
+    chunks = chunk_message(msg)
+    for i, chunk in enumerate(chunks):
+        assert len(chunk) <= TARGET_LENGTH, (
+            f"Chunk {i} exceeds TARGET_LENGTH: {len(chunk)} chars"
+        )
