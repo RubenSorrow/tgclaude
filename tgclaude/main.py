@@ -228,6 +228,7 @@ def main() -> None:
     app.add_handler(CommandHandler("usage", usage_command))
     app.add_handler(CommandHandler("alerts", alerts_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("delete", delete_command))
 
     # Free-text message handler
     app.add_handler(
@@ -236,8 +237,6 @@ def main() -> None:
     app.add_handler(
         MessageHandler(~filters.COMMAND & ~filters.TEXT, unsupported_message_handler)
     )
-
-    app.add_handler(CommandHandler("delete", delete_command))
 
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(picker_callback, pattern=r"^pick:"))

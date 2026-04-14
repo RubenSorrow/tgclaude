@@ -263,7 +263,8 @@ async def delete_picker_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     if data == "del:cancel":
         try:
-            await query.edit_message_text("Cancelled.", reply_markup=None)
+            original = query.message.text or ""
+            await query.edit_message_text(original + "\n\nCancelled.", reply_markup=None)
         except Exception:
             pass
         return
@@ -305,7 +306,8 @@ async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("delconfirm:no:"):
         try:
-            await query.edit_message_text("Cancelled.", reply_markup=None)
+            original = query.message.text or ""
+            await query.edit_message_text(original + "\n\nCancelled.", reply_markup=None)
         except Exception:
             pass
         return
@@ -322,8 +324,10 @@ async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
     from tgclaude.claude_bridge import _active_sessions
     if uuid in _active_sessions:
         try:
+            original = query.message.text_html or query.message.text or ""
             await query.edit_message_text(
-                "This session is currently in use; wait for the turn to finish, then retry.",
+                original + "\n\nThis session is currently in use; wait for the turn to finish, then retry.",
+                parse_mode="HTML",
                 reply_markup=None,
             )
         except Exception:
@@ -344,8 +348,10 @@ async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
     except OSError as exc:
         logger.warning("delete_confirm_callback: unlink failed for %s: %s", jsonl_path, exc)
         try:
+            original = query.message.text_html or query.message.text or ""
             await query.edit_message_text(
-                f"Could not delete session: {exc}",
+                original + f"\n\nCould not delete session: {html.escape(str(exc))}",
+                parse_mode="HTML",
                 reply_markup=None,
             )
         except Exception:
@@ -360,7 +366,12 @@ async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
         _cancel_all_pending_permissions(user_id)
 
     try:
-        await query.edit_message_text("Session deleted.", reply_markup=None)
+        original = query.message.text_html or query.message.text or ""
+        await query.edit_message_text(
+            original + "\n\nSession deleted.",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
     except Exception:
         pass
 
