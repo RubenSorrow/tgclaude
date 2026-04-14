@@ -306,8 +306,12 @@ async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("delconfirm:no:"):
         try:
-            original = query.message.text or ""
-            await query.edit_message_text(original + "\n\nCancelled.", reply_markup=None)
+            original = query.message.text_html or query.message.text or ""
+            await query.edit_message_text(
+                original + "\n\nCancelled.",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
         except Exception:
             pass
         return
