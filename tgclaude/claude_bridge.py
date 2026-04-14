@@ -119,11 +119,11 @@ def _build_tool_announcement(
     return text, permission_keyboard
 
 
-async def _as_user_stream(text: str):
+async def _as_user_stream(text: str, done: asyncio.Event):
     """Wrap a plain string as the AsyncIterable[dict] the SDK expects when can_use_tool is set."""
     yield {"type": "user", "message": {"role": "user", "content": text}}
-    # Keep the stream open until the SDK cancels us on turn completion.
-    await asyncio.Event().wait()
+    # Keep the stream open until the turn is complete.
+    await done.wait()
 
 
 def _build_permission_keyboard(tool_use_id: str) -> InlineKeyboardMarkup:
@@ -222,10 +222,11 @@ class ClaudeBridge:
 
         new_session_uuid: str | None = session_uuid
         sdk_succeeded = False
+        turn_done = asyncio.Event()
         try:
             prompt: str | AsyncIterable = text
             if self._config.permission_mode != "bypass":
-                prompt = _as_user_stream(text)
+                prompt = _as_user_stream(text, turn_done)
             async with asyncio.timeout(self._config.turn_timeout_s):
                 async for block in query(
                     prompt=prompt,
@@ -239,6 +240,7 @@ class ClaudeBridge:
                         bot=bot,
                         chat_id=chat_id,
                         current_new_uuid=new_session_uuid,
+                        turn_done=turn_done,
                     )
             sdk_succeeded = True
         except TimeoutError:
@@ -269,6 +271,7 @@ class ClaudeBridge:
                     text="An unexpected error occurred. Please try again.",
                 )
         finally:
+            turn_done.set()  # ensure generator exits if it wasn't set by ResultMessage
             # Release the session slot first so the next turn can start immediately.
             if session_uuid:
                 _active_sessions.pop(session_uuid, None)
@@ -339,6 +342,7 @@ class ClaudeBridge:
         bot: Bot,
         chat_id: int,
         current_new_uuid: str | None,
+        turn_done: asyncio.Event | None = None,
     ) -> str | None:
         """Route a single SDK content block to the correct handler.
 
@@ -357,6 +361,8 @@ class ClaudeBridge:
         elif isinstance(block, ResultMessage):
             if getattr(block, "is_error", False):
                 logger.warning("SDK reported error in ResultMessage for turn")
+            if turn_done is not None:
+                turn_done.set()
             extracted = _extract_session_uuid(block)
             if extracted:
                 return extracted
