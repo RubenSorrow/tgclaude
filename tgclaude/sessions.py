@@ -57,12 +57,12 @@ def encoded_project_dir(cwd: Path) -> str:
 async def list_sessions(claude_home: Path, project_cwd: Path) -> list[SessionInfo]:
     """Return all sessions for project_cwd, sorted newest-first by mtime.
 
-    Delegates to the SDK's ``list_sessions`` function, passing the encoded
-    project directory (``$CLAUDE_HOME/projects/<encoded_cwd>``) so the SDK
-    finds the correct JSONL files.
+    Delegates to the SDK's ``list_sessions`` function, passing the raw
+    project CWD directly — the SDK handles path encoding internally.
 
     Args:
-        claude_home: Path to the Claude home directory (typically ``~/.claude``).
+        claude_home: Path to the Claude home directory.  Unused; kept for
+            API compatibility with the caller in commands.py.
         project_cwd: The working directory whose sessions should be listed.
 
     Returns:
@@ -73,9 +73,8 @@ async def list_sessions(claude_home: Path, project_cwd: Path) -> list[SessionInf
         logger.warning("claude_agent_sdk not installed; session listing unavailable")
         return []
 
-    jsonl_dir = claude_home / "projects" / encoded_project_dir(project_cwd)
     try:
-        sdk_sessions = _sdk_list_sessions(directory=str(jsonl_dir))
+        sdk_sessions = _sdk_list_sessions(directory=str(project_cwd))
     except Exception as exc:
         logger.debug("SDK list_sessions failed: %s", exc)
         return []
