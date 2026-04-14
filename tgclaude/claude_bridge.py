@@ -226,20 +226,31 @@ class ClaudeBridge:
             prompt: str | AsyncIterable = text
             if self._config.permission_mode != "bypass":
                 prompt = _as_user_stream(text)
-            async for block in query(
-                prompt=prompt,
-                options=options,
-            ):
-                await bot.send_chat_action(chat_id=chat_id, action="typing")
-                new_session_uuid = await self._dispatch_block(
-                    block=block,
-                    user_id=user_id,
-                    session_uuid=session_uuid,
-                    bot=bot,
-                    chat_id=chat_id,
-                    current_new_uuid=new_session_uuid,
-                )
+            async with asyncio.timeout(self._config.turn_timeout_s):
+                async for block in query(
+                    prompt=prompt,
+                    options=options,
+                ):
+                    await bot.send_chat_action(chat_id=chat_id, action="typing")
+                    new_session_uuid = await self._dispatch_block(
+                        block=block,
+                        user_id=user_id,
+                        session_uuid=session_uuid,
+                        bot=bot,
+                        chat_id=chat_id,
+                        current_new_uuid=new_session_uuid,
+                    )
             sdk_succeeded = True
+        except TimeoutError:
+            logger.warning(
+                "Turn timed out for user %d after %ds",
+                user_id,
+                self._config.turn_timeout_s,
+            )
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Turn timed out \u2014 Claude took too long to respond. Please try again.",
+            )
         except Exception as exc:
             if _is_auth_error(exc):
                 logger.warning("SDK auth error for user %d: %s", user_id, exc)

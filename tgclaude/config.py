@@ -40,6 +40,7 @@ class Config:
     permission_mode: str          # 'interactive' | 'bypass' | 'readonly'
     display_tz: str | None        # IANA tz name or None → use system TZ
     permission_timeout_s: int     # default 600
+    turn_timeout_s: int           # default 300
     log_level: str                # default 'INFO'
 
 
@@ -61,6 +62,7 @@ def load_config() -> Config:
     permission_mode = _parse_permission_mode()
     display_tz = _parse_display_tz()
     permission_timeout_s = _parse_positive_int("PERMISSION_TIMEOUT_S", default=600)
+    turn_timeout_s = _parse_positive_int("TURN_TIMEOUT_S", default=300)
     log_level = _parse_log_level(os.getenv("LOG_LEVEL", "INFO"))
 
     return Config(
@@ -73,6 +75,7 @@ def load_config() -> Config:
         permission_mode=permission_mode,
         display_tz=display_tz,
         permission_timeout_s=permission_timeout_s,
+        turn_timeout_s=turn_timeout_s,
         log_level=log_level,
     )
 
