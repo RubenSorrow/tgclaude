@@ -27,6 +27,9 @@ from tgclaude.config import load_config
 from tgclaude.db import init_db
 from tgclaude.handlers.alerts import alerts_command, alerts_poller
 from tgclaude.handlers.commands import (
+    delete_command,
+    delete_confirm_callback,
+    delete_picker_callback,
     help_command,
     list_command,
     new_command,
@@ -157,6 +160,7 @@ _BOT_COMMANDS = [
     BotCommand("usage", "Show Max-plan usage"),
     BotCommand("alerts", "Manage usage alerts"),
     BotCommand("whoami", "Show user ID and active session"),
+    BotCommand("delete", "Permanently delete a session"),
     BotCommand("help", "Show available commands"),
 ]
 
@@ -233,9 +237,13 @@ def main() -> None:
         MessageHandler(~filters.COMMAND & ~filters.TEXT, unsupported_message_handler)
     )
 
+    app.add_handler(CommandHandler("delete", delete_command))
+
     # Callback query handlers
     app.add_handler(CallbackQueryHandler(picker_callback, pattern=r"^pick:"))
     app.add_handler(CallbackQueryHandler(permission_callback, pattern=r"^perm:"))
+    app.add_handler(CallbackQueryHandler(delete_picker_callback, pattern=r"^del:"))
+    app.add_handler(CallbackQueryHandler(delete_confirm_callback, pattern=r"^delconfirm:"))
 
     # Background job: usage alerts poller every 300 s
     if app.job_queue:

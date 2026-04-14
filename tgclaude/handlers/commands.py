@@ -6,7 +6,9 @@ callback query handlers.
 
 from __future__ import annotations
 
+import html
 import logging
+import re as _re
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -15,11 +17,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from tgclaude.claude_bridge import pending_permissions, waiting_for_reason
+from tgclaude.db import Database
 from tgclaude.sessions import SessionInfo, list_sessions
 
 logger = logging.getLogger(__name__)
 
 _MAX_SESSIONS_IN_PICKER = 10
+_UUID_RE = _re.compile(r"^[0-9a-f-]{36}$")
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +204,165 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>/usage</b> — Show Max-plan usage\n"
         "<b>/alerts</b> — on|off, thresholds N,N,N, reset\n"
         "<b>/whoami</b> — Show your user ID and active session\n"
+        "<b>/delete</b> — Permanently delete a session\n"
         "<b>/help</b> — This message",
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# /delete
+# ---------------------------------------------------------------------------
+
+
+async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler for /delete — shows a picker of sessions to permanently delete."""
+    if update.message is None or update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+    if user_id not in config.allowed_user_ids:
+        return
+
+    sessions = await list_sessions(config.claude_home, config.claude_project_cwd)
+    sessions = sessions[:10]
+
+    if not sessions:
+        await update.message.reply_text("No sessions to delete.")
+        return
+
+    now = datetime.now(timezone.utc)
+    buttons = [
+        [InlineKeyboardButton(
+            f'🗑 "{s.title}"  ·  {_relative_time(s.mtime, now)}',
+            callback_data=f"del:{s.session_uuid}",
+        )]
+        for s in sessions
+    ]
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="del:cancel")])
+
+    await update.message.reply_text(
+        "Select a session to permanently delete:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def delete_picker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Callback for del: prefix — first step of the delete confirmation flow."""
+    query = update.callback_query
+    if query is None or query.message is None or query.from_user is None:
+        return
+    user_id = query.from_user.id
+    config = context.bot_data["config"]
+    if user_id not in config.allowed_user_ids:
+        await query.answer()
+        return
+
+    await query.answer()
+    data: str = query.data or ""
+
+    if data == "del:cancel":
+        try:
+            await query.edit_message_text("Cancelled.", reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    uuid = data[len("del:"):]
+
+    sessions = await list_sessions(config.claude_home, config.claude_project_cwd)
+    title = next((s.title for s in sessions if s.session_uuid == uuid), uuid[:8])
+
+    confirm_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, delete", callback_data=f"delconfirm:yes:{uuid}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"delconfirm:no:{uuid}"),
+        ]
+    ])
+    try:
+        await query.edit_message_text(
+            f'Delete "<b>{html.escape(title)}</b>"?\n\n<i>This cannot be undone.</i>',
+            parse_mode="HTML",
+            reply_markup=confirm_keyboard,
+        )
+    except Exception:
+        pass
+
+
+async def delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Callback for delconfirm: prefix — final confirmation step."""
+    query = update.callback_query
+    if query is None or query.message is None or query.from_user is None:
+        return
+    user_id = query.from_user.id
+    config = context.bot_data["config"]
+    if user_id not in config.allowed_user_ids:
+        await query.answer()
+        return
+
+    await query.answer()
+    data: str = query.data or ""
+
+    if data.startswith("delconfirm:no:"):
+        try:
+            await query.edit_message_text("Cancelled.", reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    if not data.startswith("delconfirm:yes:"):
+        return
+
+    uuid = data[len("delconfirm:yes:"):]
+
+    if not _UUID_RE.match(uuid):
+        logger.warning("delete_confirm_callback: invalid UUID %r from user %d", uuid, user_id)
+        return
+
+    from tgclaude.claude_bridge import _active_sessions
+    if uuid in _active_sessions:
+        try:
+            await query.edit_message_text(
+                "This session is currently in use; wait for the turn to finish, then retry.",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        return
+
+    from tgclaude.sessions import encoded_project_dir
+    jsonl_path = (
+        config.claude_home
+        / "projects"
+        / encoded_project_dir(config.claude_project_cwd)
+        / f"{uuid}.jsonl"
+    )
+    try:
+        jsonl_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("delete_confirm_callback: unlink failed for %s: %s", jsonl_path, exc)
+        try:
+            await query.edit_message_text(
+                f"Could not delete session: {exc}",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        return
+
+    db: Database = context.bot_data["db"]
+    await db.delete_permission_grants_for_session(uuid)
+    affected_user_id = await db.clear_active_session_by_uuid(uuid)
+
+    if affected_user_id == user_id:
+        _cancel_all_pending_permissions(user_id)
+
+    try:
+        await query.edit_message_text("Session deleted.", reply_markup=None)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

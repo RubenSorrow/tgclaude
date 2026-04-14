@@ -116,6 +116,30 @@ class Database:
         )
         await self._conn.commit()
 
+    async def clear_active_session_by_uuid(self, session_uuid: str) -> int | None:
+        """NULL out the active session for whichever user has session_uuid attached.
+
+        Returns the telegram_user_id of the affected row, or None if no row matched.
+        """
+        # Find which user owns this session before clearing it.
+        async with self._conn.execute(
+            "SELECT telegram_user_id FROM active_sessions WHERE session_uuid = ?",
+            (session_uuid,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            return None
+
+        user_id: int = row[0]
+        await self._conn.execute(
+            "UPDATE active_sessions SET session_uuid = NULL, updated_at = datetime('now')"
+            " WHERE session_uuid = ?",
+            (session_uuid,),
+        )
+        await self._conn.commit()
+        return user_id
+
     # ------------------------------------------------------------------
     # permission_grants
     # ------------------------------------------------------------------
@@ -145,6 +169,14 @@ class Database:
             VALUES (?, ?, ?)
             """,
             (user_id, session_uuid, tool_name),
+        )
+        await self._conn.commit()
+
+    async def delete_permission_grants_for_session(self, session_uuid: str) -> None:
+        """Delete all permission grants for the given session UUID."""
+        await self._conn.execute(
+            "DELETE FROM permission_grants WHERE session_uuid = ?",
+            (session_uuid,),
         )
         await self._conn.commit()
 
