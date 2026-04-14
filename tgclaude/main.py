@@ -205,6 +205,7 @@ def main() -> None:
     app = (
         Application.builder()
         .token(config.bot_token)
+        .concurrent_updates(True)
         .post_init(_post_init)
         .post_shutdown(_shutdown)
         .build()
