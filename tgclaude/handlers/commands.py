@@ -544,18 +544,21 @@ async def permission_callback(
         await query.answer("Denied.")
 
     elif choice == "why":
-        # Don't resolve yet — wait for the next text message
         if user_id in waiting_for_reason:
-            # Cancel any prior pending reason
-            old_id = waiting_for_reason[user_id]
+            old_id = waiting_for_reason.pop(user_id)
             old_key = (user_id, old_id)
             old_future = pending_permissions.get(old_key)
             if old_future and not old_future.done():
-                old_future.set_result({"allow": False})
+                old_future.set_result({"allow": False, "message": "Permission denied by user."})
 
-        waiting_for_reason[user_id] = tool_use_id
-        await query.answer("Send a message explaining why Claude should not use this tool.")
-        # Keep the keyboard — do not edit yet, the message handler will
+        # Only enter waiting state if the future is still pending
+        key = (user_id, tool_use_id)
+        future = pending_permissions.get(key)
+        if future and not future.done():
+            waiting_for_reason[user_id] = tool_use_id
+            await query.answer("Send a message explaining why Claude should not use this tool.")
+        else:
+            await query.answer("This prompt has already been resolved.")
         return
     else:
         logger.warning("Unknown permission choice %r in callback_data", choice)

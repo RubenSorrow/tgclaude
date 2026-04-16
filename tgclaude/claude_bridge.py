@@ -527,7 +527,7 @@ class ClaudeBridge:
 
         if result.get("allow"):
             return PermissionResultAllow()
-        return PermissionResultDeny(message=result.get("message", ""))
+        return PermissionResultDeny(message=result.get("message") or "Permission denied.")
 
     async def _ask_user_for_permission(
         self,
