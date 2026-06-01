@@ -30,8 +30,12 @@ from tgclaude.handlers.commands import (
     delete_command,
     delete_confirm_callback,
     delete_picker_callback,
+    effort_callback,
+    effort_command,
     help_command,
     list_command,
+    model_callback,
+    model_command,
     new_command,
     permission_callback,
     picker_callback,
@@ -166,6 +170,8 @@ _BOT_COMMANDS = [
     BotCommand("alerts", "Manage usage alerts"),
     BotCommand("whoami", "Show user ID and active session"),
     BotCommand("delete", "Permanently delete a session"),
+    BotCommand("model", "Switch Claude model"),
+    BotCommand("effort", "Switch reasoning effort"),
     BotCommand("help", "Show available commands"),
 ]
 
@@ -234,6 +240,8 @@ def main() -> None:
     app.add_handler(CommandHandler("alerts", alerts_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("delete", delete_command))
+    app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("effort", effort_command))
 
     # Free-text message handler
     app.add_handler(
@@ -253,6 +261,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(permission_callback, pattern=r"^perm:"))
     app.add_handler(CallbackQueryHandler(delete_picker_callback, pattern=r"^del:"))
     app.add_handler(CallbackQueryHandler(delete_confirm_callback, pattern=r"^delconfirm:"))
+    app.add_handler(CallbackQueryHandler(model_callback, pattern=r"^cfg:model:"))
+    app.add_handler(CallbackQueryHandler(effort_callback, pattern=r"^cfg:effort:"))
 
     # Background job: usage alerts poller every 300 s
     if app.job_queue:

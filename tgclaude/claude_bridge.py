@@ -222,7 +222,10 @@ class ClaudeBridge:
         if session_uuid:
             _active_sessions[session_uuid] = user_id
 
-        options = self._build_options(user_id, session_uuid, bot, chat_id)
+        model = await self._db.get_setting(f"model_{user_id}")
+        effort = await self._db.get_setting(f"effort_{user_id}")
+
+        options = self._build_options(user_id, session_uuid, bot, chat_id, model=model, effort=effort)
 
         await bot.send_chat_action(chat_id=chat_id, action="typing")
 
@@ -267,7 +270,18 @@ class ClaudeBridge:
                 text="Turn timed out \u2014 Claude took too long to respond. Please try again.",
             )
         except Exception as exc:
-            if _is_auth_error(exc):
+            if effort and _is_effort_unsupported_error(exc):
+                logger.warning("Effort %r unsupported by CLI for user %d: %s", effort, user_id, exc)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "\u26a0\ufe0f Your Claude CLI does not support <code>--effort</code>. "
+                        "Update to a recent version (Opus 4.6+ required for adaptive thinking). "
+                        "Your <b>/model</b> setting still applies."
+                    ),
+                    parse_mode="HTML",
+                )
+            elif _is_auth_error(exc):
                 logger.warning("SDK auth error for user %d: %s", user_id, exc)
                 await bot.send_message(
                     chat_id=chat_id,
@@ -308,6 +322,8 @@ class ClaudeBridge:
         session_uuid: str | None,
         bot: Bot,
         chat_id: int,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> ClaudeAgentOptions:
         """Construct ClaudeAgentOptions for this turn."""
         kwargs: dict[str, Any] = {
@@ -317,6 +333,10 @@ class ClaudeBridge:
             kwargs["cli_path"] = str(self._config.claude_binary)
         if session_uuid:
             kwargs["resume"] = session_uuid
+        if model is not None:
+            kwargs["model"] = model
+        if effort is not None:
+            kwargs["effort"] = effort
 
         mode = self._config.permission_mode
         if mode == "bypass":
@@ -660,6 +680,14 @@ def _is_auth_error(exc: Exception) -> bool:
     name = type(exc).__name__.lower()
     msg = str(exc).lower()
     return "auth" in name or "401" in msg or "unauthorized" in msg or "credential" in msg
+
+
+def _is_effort_unsupported_error(exc: Exception) -> bool:
+    """Return True only when the exception is specifically about --effort being unsupported."""
+    if _is_auth_error(exc):
+        return False
+    msg = str(exc).lower()
+    return "effort" in msg
 
 
 def _extract_session_uuid(result: ResultMessage) -> str | None:

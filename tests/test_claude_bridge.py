@@ -136,6 +136,7 @@ def _make_minimal_db() -> MagicMock:
     """Build a Database mock whose get_active_session returns None."""
     db = MagicMock()
     db.get_active_session = AsyncMock(return_value=None)
+    db.get_setting = AsyncMock(return_value=None)
     db.set_active_session = AsyncMock()
     db.clear_active_session = AsyncMock()
     return db

@@ -25,6 +25,27 @@ logger = logging.getLogger(__name__)
 _MAX_SESSIONS_IN_PICKER = 10
 _UUID_RE = _re.compile(r"^[0-9a-f-]{36}$")
 
+# ---------------------------------------------------------------------------
+# Model / effort configuration constants
+# ---------------------------------------------------------------------------
+
+_VALID_MODELS: tuple[str, ...] = ("opus", "sonnet", "haiku")
+_VALID_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+_MODEL_LABELS: dict[str, str] = {
+    "opus": "Opus",
+    "sonnet": "Sonnet",
+    "haiku": "Haiku",
+}
+
+_EFFORT_LABELS: dict[str, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh (Opus 4.7+ only)",
+    "max": "max",
+}
+
 
 # ---------------------------------------------------------------------------
 # /start
@@ -205,9 +226,200 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>/alerts</b> — on|off, thresholds N,N,N, reset\n"
         "<b>/whoami</b> — Show your user ID and active session\n"
         "<b>/delete</b> — Permanently delete a session\n"
+        "<b>/model</b> — Switch Claude model (Opus / Sonnet / Haiku / Default)\n"
+        "<b>/effort</b> — Switch reasoning effort (low / medium / high / xhigh / max)\n"
         "<b>/help</b> — This message",
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# /model
+# ---------------------------------------------------------------------------
+
+
+def _build_model_keyboard(current: str | None) -> InlineKeyboardMarkup:
+    """Return an inline keyboard for model selection, ticking the active choice."""
+    buttons = [
+        InlineKeyboardButton(
+            f"{'✅ ' if current == value else ''}{label}",
+            callback_data=f"cfg:model:{value}",
+        )
+        for value, label in _MODEL_LABELS.items()
+    ]
+    default_label = "✅ Default (CLI decides)" if current is None else "Default (CLI decides)"
+    buttons.append(
+        InlineKeyboardButton(default_label, callback_data="cfg:model:default")
+    )
+    return InlineKeyboardMarkup([buttons])
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the current model and an inline keyboard to change it."""
+    if update.message is None or update.effective_user is None:
+        return
+
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+
+    if user_id not in config.allowed_user_ids:
+        logger.debug("Ignoring /model from unlisted user %d", user_id)
+        return
+
+    db: Database = context.bot_data["db"]
+    current = await db.get_setting(f"model_{user_id}")
+
+    current_display = _MODEL_LABELS.get(current, "Default (CLI decides)") if current else "Default (CLI decides)"
+    keyboard = _build_model_keyboard(current)
+
+    await update.message.reply_html(
+        f"<b>Current model:</b> {current_display}\n\nSelect a model:",
+        reply_markup=keyboard,
+    )
+
+
+async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle cfg:model:<value> callback data."""
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+
+    user_id = query.from_user.id
+    config = context.bot_data["config"]
+
+    if user_id not in config.allowed_user_ids:
+        logger.debug("Ignoring model callback from unlisted user %d", user_id)
+        await query.answer()
+        return
+
+    data: str = query.data or ""
+    # format: cfg:model:<value>
+    value = data[len("cfg:model:"):]
+
+    db: Database = context.bot_data["db"]
+
+    if value == "default":
+        await db.delete_setting(f"model_{user_id}")
+        label = "Default (CLI decides)"
+    elif value in _VALID_MODELS:
+        await db.set_setting(f"model_{user_id}", value)
+        label = _MODEL_LABELS[value]
+    else:
+        logger.warning("model_callback: unknown value %r from user %d", value, user_id)
+        await query.answer()
+        return
+
+    await query.edit_message_text(
+        f"Model set to <b>{label}</b> — applies from your next turn.",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    await query.answer()
+
+
+# ---------------------------------------------------------------------------
+# /effort
+# ---------------------------------------------------------------------------
+
+
+def _build_effort_keyboard(current: str | None) -> InlineKeyboardMarkup:
+    """Return an inline keyboard for effort selection, ticking the active choice."""
+    rows: list[list[InlineKeyboardButton]] = []
+
+    # First row: low, medium, high
+    row1 = [
+        InlineKeyboardButton(
+            f"{'✅ ' if current == v else ''}{_EFFORT_LABELS[v]}",
+            callback_data=f"cfg:effort:{v}",
+        )
+        for v in ("low", "medium", "high")
+    ]
+    rows.append(row1)
+
+    # Second row: xhigh, max
+    row2 = [
+        InlineKeyboardButton(
+            f"{'✅ ' if current == v else ''}{_EFFORT_LABELS[v]}",
+            callback_data=f"cfg:effort:{v}",
+        )
+        for v in ("xhigh", "max")
+    ]
+    rows.append(row2)
+
+    # Third row: Default
+    default_label = "✅ Default (CLI decides)" if current is None else "Default (CLI decides)"
+    rows.append([InlineKeyboardButton(default_label, callback_data="cfg:effort:default")])
+
+    return InlineKeyboardMarkup(rows)
+
+
+async def effort_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the current effort level and an inline keyboard to change it."""
+    if update.message is None or update.effective_user is None:
+        return
+
+    user_id = update.effective_user.id
+    config = context.bot_data["config"]
+
+    if user_id not in config.allowed_user_ids:
+        logger.debug("Ignoring /effort from unlisted user %d", user_id)
+        return
+
+    db: Database = context.bot_data["db"]
+    current = await db.get_setting(f"effort_{user_id}")
+
+    current_display = _EFFORT_LABELS.get(current, "Default (CLI decides)") if current else "Default (CLI decides)"
+    keyboard = _build_effort_keyboard(current)
+
+    await update.message.reply_html(
+        f"<b>Current effort:</b> {current_display}\n\nSelect an effort level:",
+        reply_markup=keyboard,
+    )
+
+
+async def effort_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle cfg:effort:<value> callback data."""
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+
+    user_id = query.from_user.id
+    config = context.bot_data["config"]
+
+    if user_id not in config.allowed_user_ids:
+        logger.debug("Ignoring effort callback from unlisted user %d", user_id)
+        await query.answer()
+        return
+
+    data: str = query.data or ""
+    # format: cfg:effort:<value>
+    value = data[len("cfg:effort:"):]
+
+    db: Database = context.bot_data["db"]
+
+    if value == "default":
+        await db.delete_setting(f"effort_{user_id}")
+        label = "Default (CLI decides)"
+        note = ""
+    elif value in _VALID_EFFORTS:
+        await db.set_setting(f"effort_{user_id}", value)
+        label = _EFFORT_LABELS[value]
+        note = (
+            "\n\n⚠️ xhigh requires Opus 4.7+; falls back to high on other models."
+            if value == "xhigh"
+            else ""
+        )
+    else:
+        logger.warning("effort_callback: unknown value %r from user %d", value, user_id)
+        await query.answer()
+        return
+
+    await query.edit_message_text(
+        f"Effort set to <b>{label}</b> — applies from your next turn.{note}",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    await query.answer()
 
 
 # ---------------------------------------------------------------------------
