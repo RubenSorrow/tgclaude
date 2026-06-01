@@ -245,10 +245,13 @@ def _collect_chunks(html: str) -> list[str]:  # noqa: C901
 
         # Normal split
         chunk_text, new_remainder = _split_content(content_slice, available_for_content)
+        # Compute the tag stack AFTER this chunk's content so we close all tags
+        # that are open at the split point — including those opened within the
+        # current content slice (not just those inherited from prior chunks).
+        tag_stack = _parse_open_tags_in_slice(reopen_str + chunk_text)
         close_str = _close_tags(tag_stack)
         full_chunk = reopen_str + chunk_text + close_str
         chunks.append(full_chunk)
-        tag_stack = _parse_open_tags_in_slice(reopen_str + chunk_text)
 
         if new_remainder == remainder:
             # Safety valve: no progress made — emit the rest as an oversized chunk
