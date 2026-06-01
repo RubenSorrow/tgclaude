@@ -18,6 +18,20 @@ from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Domain exceptions
+# ---------------------------------------------------------------------------
+
+
+class ImageTooLargeError(ValueError):
+    """Raised when the normalized image exceeds the output size limit."""
+
+
+class UnsupportedImageError(ValueError):
+    """Raised when the image format is unsupported or the file is corrupt."""
+
+
 # ---------------------------------------------------------------------------
 # Constants (from §IMG-05 spec)
 # ---------------------------------------------------------------------------
@@ -41,7 +55,7 @@ async def normalize_image(data: bytes) -> tuple[bytes, str]:
     Raises:
         ValueError: if the image is unsupported/corrupt or output exceeds 5 MB.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     jpeg_bytes = await loop.run_in_executor(None, partial(_normalize_sync, data))
     return jpeg_bytes, _JPEG_MEDIA_TYPE
 
@@ -55,11 +69,29 @@ def _normalize_sync(data: bytes) -> bytes:
     """Decode, resize, flatten, and re-encode *data* as JPEG.
 
     Executed in a thread-pool executor — must not touch the event loop.
+
+    Barricade: any Pillow error from any stage of the pipeline (open, load,
+    resize, encode) is caught here and re-raised as a domain exception.
+    Pillow decodes lazily — Image.open() only reads the header, so truncated
+    or partially-corrupt images may only fail during resize or save.  We must
+    therefore guard the entire pipeline, not just the open call.
     """
-    image = _decode_image(data)
-    image = _resize_to_long_edge(image, MAX_LONG_EDGE_PX)
-    image = _flatten_transparency(image)
-    jpeg_bytes = _encode_as_jpeg(image, JPEG_QUALITY)
+    try:
+        image = _decode_image(data)
+        image = _resize_to_long_edge(image, MAX_LONG_EDGE_PX)
+        image = _flatten_transparency(image)
+        jpeg_bytes = _encode_as_jpeg(image, JPEG_QUALITY)
+    except (ImageTooLargeError, UnsupportedImageError):
+        # Already a domain exception — let it through unchanged.
+        raise
+    except OSError as exc:
+        # Covers "image file is truncated", "broken data stream", and other
+        # I/O-level Pillow errors that surface during lazy decode/resize/encode.
+        raise UnsupportedImageError("truncated or corrupt image data") from exc
+    except Exception as exc:
+        # Catch-all for any other Pillow internals that escape the specific
+        # cases above (e.g. struct.error for malformed chunk data).
+        raise UnsupportedImageError("image processing failed") from exc
     _assert_size_limit(jpeg_bytes, MAX_OUTPUT_BYTES)
     logger.debug(
         "normalize_image: output %d bytes (%dx%d)",
@@ -79,7 +111,7 @@ def _decode_image(data: bytes) -> Image.Image:
     try:
         return Image.open(io.BytesIO(data))
     except UnidentifiedImageError as exc:
-        raise ValueError("unsupported or corrupt image") from exc
+        raise UnsupportedImageError("unsupported or corrupt image") from exc
 
 
 def _resize_to_long_edge(image: Image.Image, max_long_edge: int) -> Image.Image:
@@ -93,7 +125,7 @@ def _resize_to_long_edge(image: Image.Image, max_long_edge: int) -> Image.Image:
 
     scale = max_long_edge / long_edge
     new_size = (round(image.width * scale), round(image.height * scale))
-    return image.resize(new_size, Image.LANCZOS)
+    return image.resize(new_size, Image.Resampling.LANCZOS)
 
 
 def _flatten_transparency(image: Image.Image) -> Image.Image:
@@ -128,6 +160,6 @@ def _assert_size_limit(data: bytes, limit: int) -> None:
     limit for pathological inputs (e.g. a 1568×1568 image with extreme detail).
     """
     if len(data) > limit:
-        raise ValueError(
+        raise ImageTooLargeError(
             f"Normalized image is {len(data)} bytes, exceeding the {limit}-byte limit."
         )

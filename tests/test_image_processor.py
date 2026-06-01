@@ -170,3 +170,90 @@ async def test_normalize_image_output_bytes_are_valid_jpeg() -> None:
 
     img = _open_jpeg(jpeg_bytes)
     assert img.format == "JPEG"
+
+
+# ---------------------------------------------------------------------------
+# Typed domain exception classes (IMG-08, GAP-2b)
+# ---------------------------------------------------------------------------
+
+
+async def test_corrupt_bytes_raise_unsupported_image_error_not_generic_value_error() -> None:
+    """Corrupt/unsupported bytes must raise UnsupportedImageError specifically,
+    not just the base ValueError, so callers can distinguish the error type."""
+    from tgclaude.image_processor import UnsupportedImageError
+
+    with pytest.raises(UnsupportedImageError):
+        await normalize_image(b"this is not an image \x00\x01\x02\x03")
+
+
+async def test_empty_bytes_raise_unsupported_image_error() -> None:
+    """An empty byte string must raise UnsupportedImageError."""
+    from tgclaude.image_processor import UnsupportedImageError
+
+    with pytest.raises(UnsupportedImageError):
+        await normalize_image(b"")
+
+
+async def test_still_too_large_after_resize_raises_image_too_large_error() -> None:
+    """An image whose JPEG encoding still exceeds MAX_OUTPUT_BYTES after normalization
+    must raise ImageTooLargeError (not a generic ValueError)."""
+    from unittest.mock import patch
+
+    from tgclaude.image_processor import ImageTooLargeError
+
+    # Patch _assert_size_limit to unconditionally raise ImageTooLargeError,
+    # simulating the post-resize size check failing on an adversarial input.
+    def _force_overflow(data: bytes, limit: int) -> None:
+        raise ImageTooLargeError(f"Normalized image is {len(data)} bytes, exceeding {limit}.")
+
+    small_png = _make_png(100, 100)
+
+    with patch("tgclaude.image_processor._assert_size_limit", side_effect=_force_overflow):
+        with pytest.raises(ImageTooLargeError):
+            await normalize_image(small_png)
+
+
+async def test_image_too_large_error_is_subclass_of_value_error() -> None:
+    """ImageTooLargeError must be a subclass of ValueError for backwards compatibility."""
+    from tgclaude.image_processor import ImageTooLargeError
+
+    assert issubclass(ImageTooLargeError, ValueError)
+
+
+async def test_unsupported_image_error_is_subclass_of_value_error() -> None:
+    """UnsupportedImageError must be a subclass of ValueError for backwards compatibility."""
+    from tgclaude.image_processor import UnsupportedImageError
+
+    assert issubclass(UnsupportedImageError, ValueError)
+
+
+# ---------------------------------------------------------------------------
+# Truncated / partially-corrupt images (lazy-decode barricade)
+# ---------------------------------------------------------------------------
+
+
+def _make_truncated_png(truncation_bytes: int = 100) -> bytes:
+    """Return a real PNG with the last *truncation_bytes* removed.
+
+    The resulting bytes have a valid PNG header (so Image.open() succeeds)
+    but incomplete pixel data (so Pillow raises OSError during decode/resize).
+    """
+    buf = io.BytesIO()
+    img = Image.new("RGB", (50, 50), color=(255, 0, 0))
+    img.save(buf, format="PNG")
+    return buf.getvalue()[:-truncation_bytes]
+
+
+async def test_truncated_png_raises_unsupported_image_error() -> None:
+    """A PNG with valid header but truncated pixel data must raise UnsupportedImageError.
+
+    This guards the lazy-decode barricade: Image.open() only reads the header,
+    so truncation is only detected during resize/encode.  The error must be
+    wrapped as UnsupportedImageError, not a bare OSError propagating to the caller.
+    """
+    from tgclaude.image_processor import UnsupportedImageError
+
+    truncated = _make_truncated_png(truncation_bytes=100)
+
+    with pytest.raises(UnsupportedImageError):
+        await normalize_image(truncated)

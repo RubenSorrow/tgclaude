@@ -231,9 +231,15 @@ class ClaudeBridge:
         turn_done = asyncio.Event()
         try:
             content: str | list[dict] = _build_turn_content(turn)
-            prompt: str | AsyncIterable = content
-            if self._config.permission_mode != "bypass":
-                prompt = _as_user_stream(content, turn_done)
+            # Use an AsyncIterable when the SDK cannot handle the content type
+            # directly (list[dict]) or when can_use_tool is active and the
+            # stream must stay open for permission callbacks.  Plain str in
+            # bypass mode is passed directly because the SDK accepts it natively
+            # and avoids an extra layer of indirection.
+            if isinstance(content, list) or self._config.permission_mode != "bypass":
+                prompt: str | AsyncIterable = _as_user_stream(content, turn_done)
+            else:
+                prompt = content
             async with asyncio.timeout(self._config.turn_timeout_s):
                 async for block in query(
                     prompt=prompt,
@@ -467,7 +473,6 @@ class ClaudeBridge:
             user_writes = self._pending_writes.get(user_id, {})
             file_path_str = user_writes.pop(tool_use_id, None)
             if file_path_str and not tool_errored:
-                from pathlib import Path
                 try:
                     await dispatch_file(Path(file_path_str), bot, chat_id)
                 except Exception as exc:

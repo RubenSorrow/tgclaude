@@ -14,6 +14,7 @@ def _make_callback_query(data: str, user_id: int = 1, message_text: str = "Delet
     """Build a minimal mock CallbackQuery."""
     msg = MagicMock()
     msg.text = message_text
+    msg.text_html = message_text
     query = MagicMock()
     query.data = data
     query.from_user = MagicMock()
