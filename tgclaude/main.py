@@ -38,7 +38,12 @@ from tgclaude.handlers.commands import (
     start_command,
     whoami_command,
 )
-from tgclaude.handlers.messages import message_handler, unsupported_message_handler
+from tgclaude.handlers.messages import (
+    document_handler,
+    message_handler,
+    photo_handler,
+    unsupported_message_handler,
+)
 from tgclaude.handlers.usage import usage_command
 from tgclaude.permissions import PermissionManager
 from tgclaude.usage_client import UsageClient
@@ -234,6 +239,11 @@ def main() -> None:
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler)
     )
+
+    # Image handlers — must be registered before the generic unsupported catch-all
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
+
     app.add_handler(
         MessageHandler(~filters.COMMAND & ~filters.TEXT, unsupported_message_handler)
     )

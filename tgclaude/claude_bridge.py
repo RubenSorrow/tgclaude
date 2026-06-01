@@ -38,6 +38,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from tgclaude.config import Config, READONLY_TOOLS
 from tgclaude.db import Database
 from tgclaude.formatter import format_text, chunk_message
+from tgclaude.handlers.messages import PendingTurn
 from tgclaude.media import dispatch_file
 from tgclaude.permissions import PermissionManager
 
@@ -119,10 +120,15 @@ def _build_tool_announcement(
     return text, permission_keyboard
 
 
-async def _as_user_stream(text: str, done: asyncio.Event):
-    """Wrap a plain string as the AsyncIterable[dict] the SDK expects when can_use_tool is set."""
-    yield {"type": "user", "message": {"role": "user", "content": text}}
-    # Keep the stream open until the turn is complete.
+async def _as_user_stream(content: str | list[dict], done: asyncio.Event):
+    """Wrap text or a content list as the AsyncIterable[dict] the SDK expects.
+
+    Used when can_use_tool is set (interactive/readonly permission modes).
+    The stream must stay open until the turn completes so the SDK can issue
+    further permission callbacks through it.
+    """
+    yield {"type": "user", "message": {"role": "user", "content": content}}
+    # Keep the generator alive until the SDK signals turn completion.
     await done.wait()
 
 
@@ -180,7 +186,7 @@ class ClaudeBridge:
     async def run_turn(
         self,
         user_id: int,
-        text: str,
+        turn: PendingTurn,
         bot: Bot,
         chat_id: int,
     ) -> None:
@@ -224,9 +230,10 @@ class ClaudeBridge:
         sdk_succeeded = False
         turn_done = asyncio.Event()
         try:
-            prompt: str | AsyncIterable = text
+            content: str | list[dict] = _build_turn_content(turn)
+            prompt: str | AsyncIterable = content
             if self._config.permission_mode != "bypass":
-                prompt = _as_user_stream(text, turn_done)
+                prompt = _as_user_stream(content, turn_done)
             async with asyncio.timeout(self._config.turn_timeout_s):
                 async for block in query(
                     prompt=prompt,
@@ -626,6 +633,21 @@ class ClaudeBridge:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_turn_content(turn: PendingTurn) -> str | list[dict]:
+    """Convert a PendingTurn into the content value accepted by the SDK.
+
+    - Image turn: list of image content blocks, optionally preceded by a text block.
+    - Text turn: plain string.
+    """
+    if turn.images:
+        content: list[dict] = []
+        if turn.caption:
+            content.append({"type": "text", "text": turn.caption})
+        content.extend(turn.images)
+        return content
+    return turn.text or ""
 
 
 def _is_auth_error(exc: Exception) -> bool:
