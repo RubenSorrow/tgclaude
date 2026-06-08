@@ -18,12 +18,15 @@ import asyncio
 import base64
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from tgclaude.telegram_utils import send_typing_action
+
 logger = logging.getLogger(__name__)
+
 
 _MAX_QUEUE_SIZE = 5
 _ALBUM_DEBOUNCE_S = 2.0
@@ -277,7 +280,7 @@ async def _handle_incoming_image(
     else:
         arrival_index = 0
 
-    await bot.send_chat_action(chat_id=chat_id, action="typing")
+    await send_typing_action(bot, chat_id)
 
     try:
         block = await _download_and_normalize(file_id, bot)

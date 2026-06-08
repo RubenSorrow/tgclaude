@@ -5,18 +5,19 @@ Wires all components together and starts the Telegram long-polling loop.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import sys
-from pathlib import Path
 
 import httpx
+import telegram.error
 from telegram import BotCommand
 from telegram.ext import (
+    AIORateLimiter,
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
@@ -183,6 +184,25 @@ async def _post_init(application: Application) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Error handler
+# ---------------------------------------------------------------------------
+
+
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Suppress transient polling noise; log everything else as an error."""
+    exc = context.error
+    transient = (
+        telegram.error.NetworkError,
+        telegram.error.TimedOut,
+        telegram.error.RetryAfter,
+    )
+    if isinstance(exc, transient):
+        logger.warning("Transient Telegram error suppressed: %s", exc)
+    else:
+        logger.error("Unhandled exception in update handler", exc_info=exc)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -221,6 +241,7 @@ def main() -> None:
         Application.builder()
         .token(config.bot_token)
         .concurrent_updates(True)
+        .rate_limiter(AIORateLimiter())
         .post_init(_post_init)
         .post_shutdown(_shutdown)
         .build()
@@ -277,6 +298,9 @@ def main() -> None:
             "JobQueue not available; usage alerts will not fire. "
             "Install python-telegram-bot[job-queue] to enable."
         )
+
+    # Register global error handler (suppresses transient polling noise)
+    app.add_error_handler(_error_handler)
 
     # 5. Run long-polling
     logger.info("Starting long-polling loop")

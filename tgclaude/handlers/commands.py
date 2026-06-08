@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 
 from tgclaude.claude_bridge import pending_permissions, waiting_for_reason
 from tgclaude.db import Database
-from tgclaude.sessions import SessionInfo, list_sessions
+from tgclaude.sessions import list_sessions
 
 logger = logging.getLogger(__name__)
 

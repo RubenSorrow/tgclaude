@@ -37,6 +37,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from tgclaude.config import Config, READONLY_TOOLS
 from tgclaude.db import Database
+from tgclaude.telegram_utils import send_typing_action
 from tgclaude.formatter import format_text, chunk_message
 from tgclaude.handlers.messages import PendingTurn
 from tgclaude.media import dispatch_file
@@ -227,12 +228,11 @@ class ClaudeBridge:
 
         options = self._build_options(user_id, session_uuid, bot, chat_id, model=model, effort=effort)
 
-        await bot.send_chat_action(chat_id=chat_id, action="typing")
-
         new_session_uuid: str | None = session_uuid
         sdk_succeeded = False
         turn_done = asyncio.Event()
         try:
+            await send_typing_action(bot, chat_id)
             content: str | list[dict] = _build_turn_content(turn)
             # Use an AsyncIterable when the SDK cannot handle the content type
             # directly (list[dict]) or when can_use_tool is active and the
@@ -248,7 +248,7 @@ class ClaudeBridge:
                     prompt=prompt,
                     options=options,
                 ):
-                    await bot.send_chat_action(chat_id=chat_id, action="typing")
+                    await send_typing_action(bot, chat_id)
                     new_session_uuid = await self._dispatch_block(
                         block=block,
                         user_id=user_id,
