@@ -8,9 +8,11 @@ as a text notice with the path.
 from __future__ import annotations
 
 import html
+import io
 import logging
 from pathlib import Path
 
+import telegram.error
 from telegram import Bot
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,51 @@ async def dispatch_file(path: Path, bot: Bot, chat_id: int) -> None:
     else:
         logger.debug("Unknown extension %r for %s; sending path notice", suffix, path)
         await _send_path_notice(path, bot, chat_id)
+
+
+async def send_screenshot_bytes(raw: bytes, bot: Bot, chat_id: int) -> None:
+    """Send in-memory screenshot bytes (from a tool result image block) to Telegram.
+
+    Pipeline:
+    1. Normalize via image_processor (resize ≤1568 px, JPEG q85) — handles
+       Telegram's dimension limit. On failure falls back to sending raw bytes.
+    2. Try send_photo. On TelegramError (size rejection, etc.) fall back to
+       send_document with filename "screenshot.jpg".
+    3. If send_document also fails, re-raise so the caller can log-and-skip.
+    """
+    from tgclaude.image_processor import normalize_image  # lazy import avoids circular dep
+
+    try:
+        jpeg_bytes, _ = await normalize_image(raw)
+    except ValueError as exc:
+        logger.warning(
+            "send_screenshot_bytes: normalize_image failed (%d bytes): %s; using raw bytes",
+            len(raw),
+            exc,
+        )
+        jpeg_bytes = raw
+
+    try:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=io.BytesIO(jpeg_bytes),
+            caption="📸 Screenshot",
+        )
+    except telegram.error.TelegramError as photo_exc:
+        logger.warning(
+            "send_screenshot_bytes: send_photo failed (%d bytes): %s; falling back to document",
+            len(jpeg_bytes),
+            photo_exc,
+        )
+        try:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(jpeg_bytes),
+                filename="screenshot.jpg",
+                caption="📸 Screenshot",
+            )
+        except Exception as doc_exc:
+            raise photo_exc from doc_exc
 
 
 # ---------------------------------------------------------------------------

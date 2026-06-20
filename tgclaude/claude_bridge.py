@@ -10,6 +10,7 @@ Wraps the claude-agent-sdk in one cohesive async class that:
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import html
 import json
@@ -33,6 +34,7 @@ from claude_agent_sdk.types import (
     PermissionResultAllow,
     PermissionResultDeny,
 )
+import telegram.error
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from tgclaude.config import Config, READONLY_TOOLS
@@ -40,7 +42,7 @@ from tgclaude.db import Database
 from tgclaude.telegram_utils import send_typing_action
 from tgclaude.formatter import format_text, chunk_message
 from tgclaude.handlers.messages import PendingTurn
-from tgclaude.media import dispatch_file
+from tgclaude.media import dispatch_file, send_screenshot_bytes
 from tgclaude.permissions import PermissionManager
 
 logger = logging.getLogger(__name__)
@@ -470,20 +472,29 @@ class ClaudeBridge:
     ) -> None:
         """Send raw tool result in a <pre> block, chunked if needed."""
         content = _extract_tool_result_content(block)
-        if not content:
-            return
+        if content.strip():
+            escaped = html.escape(content)
+            full_text = f"<pre>{escaped}</pre>"
 
-        escaped = html.escape(content)
-        full_text = f"<pre>{escaped}</pre>"
+            # Chunk without running through format_text (raw terminal output)
+            chunks = chunk_message(full_text)
+            total = len(chunks)
+            try:
+                for idx, chunk in enumerate(chunks, start=1):
+                    text = chunk
+                    if total > 1:
+                        text = f"{chunk}\n<i>({idx}/{total})</i>"
+                    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            except telegram.error.TelegramError as exc:
+                logger.warning("_send_tool_result: failed to send text chunk: %s", exc)
 
-        # Chunk without running through format_text (raw terminal output)
-        chunks = chunk_message(full_text)
-        total = len(chunks)
-        for idx, chunk in enumerate(chunks, start=1):
-            text = chunk
-            if total > 1:
-                text = f"{chunk}\n<i>({idx}/{total})</i>"
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        # Send any image blocks (e.g. playwright screenshots)
+        for img in _extract_tool_result_images(block):
+            try:
+                raw = base64.b64decode(img["data"])
+                await send_screenshot_bytes(raw, bot, chat_id)
+            except (telegram.error.TelegramError, ValueError) as exc:
+                logger.warning("_send_tool_result: failed to send screenshot: %s", exc)
 
         # Dispatch any file written by a preceding Write tool now that it exists.
         tool_use_id = block.tool_use_id
@@ -718,3 +729,52 @@ def _extract_tool_result_content(block: ToolResultBlock) -> str:
                     parts.append(str(text))
         return "\n".join(parts)
     return str(content)
+
+
+def _extract_tool_result_images(block: ToolResultBlock) -> list[dict]:
+    """Extract base64-encoded image blocks from a ToolResultBlock.
+
+    Returns a list of dicts with keys ``data`` (base64 string) and
+    ``media_type`` (MIME type, e.g. ``"image/png"``).  Only base64-sourced
+    images are supported; other source types are silently ignored.
+    """
+    content = getattr(block, "content", None)
+    if not isinstance(content, list):
+        return []
+
+    images: list[dict] = []
+    for item in content:
+        # Determine item type — support both dict and object forms.
+        if isinstance(item, dict):
+            if item.get("type") != "image":
+                continue
+            source = item.get("source", {})
+            src_type = source.get("type") if isinstance(source, dict) else getattr(source, "type", None)
+            if src_type != "base64":
+                continue
+            if isinstance(source, dict):
+                data = source.get("data", "")
+                media_type = source.get("media_type", "image/png")
+            else:
+                data = getattr(source, "data", "")
+                media_type = getattr(source, "media_type", "image/png")
+        else:
+            if getattr(item, "type", None) != "image":
+                continue
+            source = getattr(item, "source", None)
+            if source is None:
+                continue
+            src_type = source.get("type") if isinstance(source, dict) else getattr(source, "type", None)
+            if src_type != "base64":
+                continue
+            if isinstance(source, dict):
+                data = source.get("data", "")
+                media_type = source.get("media_type", "image/png")
+            else:
+                data = getattr(source, "data", "")
+                media_type = getattr(source, "media_type", "image/png")
+
+        if data:
+            images.append({"data": data, "media_type": media_type})
+
+    return images
