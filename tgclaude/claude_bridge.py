@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import collections
 import html
 import json
 import logging
@@ -177,10 +176,6 @@ class ClaudeBridge:
         # user_id → {tool_use_id → file_path_str}; populated in _send_tool_use_block,
         # consumed in _send_tool_result (Fix 2: dispatch after Write completes).
         self._pending_writes: dict[int, dict[str, str]] = {}
-        # user_id → FIFO of block.id values for ToolUseBlocks seen during the current
-        # turn.  Populated in _handle_content_item; consumed by the can_use_tool
-        # closure in _build_options so each permission prompt uses the correct ID.
-        self._tool_use_id_queues: dict[int, collections.deque[str]] = {}
 
     # ------------------------------------------------------------------
     # Public interface
@@ -205,7 +200,6 @@ class ClaudeBridge:
         """
         # Clear any stale state from a previous turn.
         self._pending_writes[user_id] = {}
-        self._tool_use_id_queues[user_id] = collections.deque()
 
         session_uuid = await self._db.get_active_session(user_id)
 
@@ -349,12 +343,10 @@ class ClaudeBridge:
                 tool_input: Any,
                 context: ToolPermissionContext,
             ):
-                queue = self._tool_use_id_queues.get(user_id, collections.deque())
-                tool_use_id = queue.popleft() if queue else ""
                 return await self._can_use_tool(
                     tool_name=tool_name,
                     tool_input=tool_input,
-                    tool_use_id=tool_use_id,
+                    tool_use_id=context.tool_use_id,
                     user_id=user_id,
                     session_uuid=session_uuid,
                     bot=bot,
@@ -419,7 +411,6 @@ class ClaudeBridge:
         elif isinstance(item, ThinkingBlock):
             pass  # Hidden in v1
         elif isinstance(item, ToolUseBlock):
-            self._tool_use_id_queues.setdefault(user_id, collections.deque()).append(item.id)
             await self._send_tool_use_block(
                 item, user_id, session_uuid, bot, chat_id
             )

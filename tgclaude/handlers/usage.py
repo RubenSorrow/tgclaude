@@ -5,7 +5,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from tgclaude.usage_client import UsageAuthError, UsageFetchError, UsageSubscriptionError, UsageClient, render_usage
+from tgclaude.usage_client import UsageAuthError, UsageFetchError, UsageRateLimitError, UsageSubscriptionError, UsageClient, render_usage
 
 log = logging.getLogger(__name__)
 logger = log
@@ -45,6 +45,12 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             "/usage is only available for Claude Max subscription plans. "
             "This account does not appear to have an active subscription."
+        )
+    except UsageRateLimitError as exc:
+        log.warning("UsageRateLimitError while handling /usage: %s", exc)
+        await update.message.reply_text(
+            "Rate-limited by Anthropic — try again in a moment.",
+            parse_mode=None,
         )
     except UsageFetchError as exc:
         log.error("UsageFetchError while handling /usage: %s", exc)

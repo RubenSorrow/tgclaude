@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import time
@@ -10,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from tgclaude.auth import read_access_token
+from tgclaude.auth import read_access_token, _is_token_expired, refresh_access_token, AuthError
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ def _get_claude_cli_version() -> str:
     return _cached_cli_version
 
 
+
 class UsageAuthError(Exception):
     """Raised when the access token is invalid and cannot be refreshed from disk."""
 
@@ -66,6 +68,10 @@ class UsageFetchError(Exception):
 
 class UsageSubscriptionError(UsageFetchError):
     """Raised when the account is not on a subscription plan."""
+
+
+class UsageRateLimitError(UsageFetchError):
+    """Raised when the usage endpoint returns HTTP 429 (rate limited)."""
 
 
 @dataclass
@@ -95,6 +101,7 @@ class UsageClient:
         self._cached_at: float | None = None
         self._token: str | None = None
         self._redaction_filter = redaction_filter  # may be None if logging not yet set up
+        self._refresh_lock = asyncio.Lock()
 
     def _load_token(self) -> str:
         new_token = read_access_token(self._claude_home)
@@ -146,6 +153,11 @@ class UsageClient:
         response = await self._http.get(USAGE_ENDPOINT, headers=self._request_headers(token))
         if response.status_code == 401:
             raise UsageAuthError("401 Unauthorized from usage endpoint")
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "")
+            raise UsageRateLimitError(
+                f"HTTP 429 rate_limit_error; Retry-After: {retry_after or 'not specified'}"
+            )
         if response.status_code != 200:
             body = response.text[:400]
             if "subscription plans" in body.lower():
@@ -179,16 +191,47 @@ class UsageClient:
 
         token = self._token or self._load_token()
 
+        # Proactive expiry check: if the stored token is already expired (or
+        # within 60 s of expiry), perform an OAuth refresh before the first
+        # fetch to eliminate the unnecessary 401 round-trip.
+        if _is_token_expired(self._claude_home):
+            async with self._refresh_lock:
+                # Re-check after acquiring lock — another coroutine may have
+                # already refreshed the token while we were waiting.
+                if _is_token_expired(self._claude_home):
+                    log.info("Access token near expiry; refreshing proactively")
+                    try:
+                        token = await refresh_access_token(self._claude_home, self._http)
+                        self._token = token
+                        if self._redaction_filter is not None:
+                            self._redaction_filter.add_secret(token)
+                    except AuthError as exc:
+                        log.warning(
+                            "Proactive token refresh failed: %s; trying with current token", exc
+                        )
+                        token = self._load_token()
+                else:
+                    # Another coroutine already refreshed; pick up the new token.
+                    token = self._token or self._load_token()
+
         try:
             data = await self._fetch(token)
         except UsageAuthError:
-            log.info("401 from usage endpoint; reloading token from disk and retrying")
-            token = self._load_token()
+            async with self._refresh_lock:
+                log.info("401 from usage endpoint; attempting OAuth token refresh")
+                try:
+                    token = await refresh_access_token(self._claude_home, self._http)
+                    self._token = token
+                    if self._redaction_filter is not None:
+                        self._redaction_filter.add_secret(token)
+                except AuthError as exc:
+                    log.warning("OAuth token refresh failed: %s", exc)
+                    token = self._load_token()
             try:
                 data = await self._fetch(token)
             except UsageAuthError as exc:
                 raise UsageAuthError(
-                    "Access token invalid after reload — SSH in and run `claude` once to refresh."
+                    "Access token invalid after OAuth refresh attempt — SSH in and run `claude` once."
                 ) from exc
 
         self._cached_data = data
